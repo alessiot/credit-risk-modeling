@@ -11,7 +11,9 @@
   PD is 14.3%, and the highest v1.1 PD on test is 11.3%. Use the score for ranking: pricing
   tiers, limits and an approval-rate policy, not a break-even decline rule.
 - **The scale is compressed at the bottom.** The lowest test decile predicts 1.87% against
-  0.10% observed. [Next version](#next-version) says how to fix it.
+  0.10% observed. [v2](#v2-tuned-on-log-loss), tuned on log loss, halves that compression in
+  2023 and is better on ranking and Brier there, but worse on mean level and the top decile. It
+  misses its pre-registered bar, so v1.1 stays the recommended model.
 
 The [notebook](notebooks/modeling.ipynb) is the main deliverable (executed, outputs saved).
 The [model card](docs/model-card.md) records every decision with its numbers, and
@@ -51,19 +53,33 @@ How the result was reached:
    about half of what remains is the 2024 drop in default rates (cause not established) and
    half is shape.
 
-## Next version
+## v2: tuned on log loss
 
-The tuned models are barely fitted (R09, the best search, is 88 three-leaf trees at learning
-rate 0.0135). Tuning on AUC cannot see a compressed scale, so it keeps choosing such models.
+The AUC-tuned models are barely fitted (v1 is 64 trees at learning rate 0.011; R09, the best AUC
+search, is 88 three-leaf trees). AUC cannot see a compressed scale. v2 (run R13) keeps the family, features and folds, and
+changes the tuning objective and the calibration data:
 
-1. Tune on log loss instead of AUC, with the same out-of-time folds.
-2. Fit and choose the calibrator on out-of-fold training scores plus validation: 658 defaults
-   instead of 214. First check on validation that fold-model scores have the same scale as the
-   final model's.
-3. At deployment, rerun that selection with 2023 outcomes added. No window is left to test it
-   here, so it carries no test claim.
-4. Do not score the 2024 window again. It has had three looks; a new version needs a new
-   out-of-time window.
+- Tuned on CV log loss with the same folds and search space. Three seeds stopped on the plateau
+  within 0.00034 of each other (CV se 0.0024), so the objective converged, though the seeds'
+  parameters differ. It chose 288 four-leaf trees, about four times v1's boosting budget.
+- Calibrator chosen and fit on out-of-fold training scores plus validation (550 defaults
+  instead of 214), after a registered check that fold-model scores share the final model's
+  scale (3 of 4 folds passed).
+- Developed on data through 2022-12, registered before it ran, scored once on 2023. The 2024
+  window is dropped on load and never used or scored.
+
+| Gap year 2023 | v1.1 | v2 | v2 minus v1.1 (95% CI) |
+|---|---|---|---|
+| AUC | 0.712 | 0.719 | +0.006 (-0.0002 to +0.012) |
+| Brier skill | +1.3% | +1.6% | Brier -0.000076 (-0.000158 to +0.000004) |
+| Bottom decile, predicted vs observed | 1.87% vs 0.38% | 0.90% vs 0.38% | |
+
+The registered rule required the Brier interval to lie entirely below zero. Its upper bound is
++0.000004, so v1.1 stays the recommended model and v2 is reported. v2 is worse on mean level
+(3.27% vs 3.20%, against 2.57% observed) and on the top decile (7.8% vs 6.4% observed, where
+v1.1 is 5.7% vs 6.2%). Next steps: refit on all mature vintages at
+deployment, with the calibrator selection rerun on the latest outcomes, and evaluate on a new
+out-of-time window. The 2024 window has had three looks and is not scored again.
 
 ## Repository layout
 
@@ -75,12 +91,14 @@ notebooks/modeling.ipynb   analysis notebook (executed)
 scripts/run_experiments.py registered experiments: baselines, tuning, ablations, convergence,
                            post-test reference runs (CV and validation only)
 scripts/recalibrate.py     registered post-test recalibration of the frozen model (v1.1)
+scripts/build_v2.py        registered v2 build (R13); drops the 2024 window on load
 scripts/compare_runs.py    compare Metaflow runs
 scripts/check.sh           format, lint and tests
 flows/credit_risk_flow.py  Metaflow pipeline
 flows/sweep.json           candidate configurations for the pipeline sweep
 models/pd-lgbm-no-apr-v1/  packaged model (calibrated pipeline + metadata.json), frozen
 models/pd-lgbm-no-apr-v1.1/ same base model, recalibrated after the test pass
+models/pd-lgbm-no-apr-v2/  v2, tuned on log loss (R13); evaluated on 2023 only
 reports/                   leaderboard, test predictions (v1; v1 and v1.1)
 runs/                      one manifest, result and trial log per experiment
 docs/model-card.md         model card
@@ -112,6 +130,7 @@ uv run python scripts/run_experiments.py --convergence --runs R02 R03
 uv run python scripts/run_experiments.py --sensitivity    # converged LightGBM searches (R08, R09)
 uv run python scripts/run_experiments.py --references     # untuned LightGBM, scorecard (R11, R12)
 uv run python scripts/recalibrate.py                      # v1.1 (R10); refuses if outputs exist
+uv run python scripts/build_v2.py                         # v2 (R13); refuses if outputs exist
 uv run jupyter nbconvert --to notebook --execute --inplace notebooks/modeling.ipynb
 ```
 

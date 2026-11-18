@@ -11,3 +11,4 @@ enhanced-v1,oot-v1,expanding-quarter-4,roc_auc,max,R08-lgbm-sensitivity,lgbm,ful
 enhanced-v1,oot-v1,expanding-quarter-4,roc_auc,max,R09-lgbm-no-apr-sensitivity,lgbm,no_apr,no,no,0.7087,0.00673,0.7185,378,plateau,no,,../runs/R09-lgbm-no-apr-sensitivity/manifest.md
 enhanced-v1,oot-v1,expanding-quarter-4,roc_auc,max,R11-lgbm-no-apr-untuned,lgbm,no_apr,no,no,0.67246,0.00688,0.68221,1,none,no,,../runs/R11-lgbm-no-apr-untuned/manifest.md
 enhanced-v1,oot-v1,expanding-quarter-4,roc_auc,max,R12-scorecard-no-apr,scorecard,no_apr,no,no,0.68041,0.01183,0.70793,9,none,no,,../runs/R12-scorecard-no-apr/manifest.md
+enhanced-v1,oot-v1,expanding-quarter-4,roc_auc,max,R13-lgbm-no-apr-logloss-v2,lgbm,no_apr,no,no,0.70559,0.00656,0.71933,256,plateau,no,,../runs/R13-lgbm-no-apr-logloss-v2/manifest.md
