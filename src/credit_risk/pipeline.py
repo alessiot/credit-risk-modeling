@@ -28,6 +28,7 @@ from credit_risk.evaluation import (
     binary_metrics,
     bootstrap_ci,
     breakeven_pd,
+    brier_skill_score,
     calibration_table,
     cutoff_table,
     expected_calibration_error,
@@ -36,6 +37,7 @@ from credit_risk.evaluation import (
 )
 from credit_risk.features import clean_special_values
 from credit_risk.models import (
+    CALIBRATION_METHODS,
     FAMILIES,
     calibrate,
     cross_validate,
@@ -286,7 +288,7 @@ def compare_champion_challenger(
 def calibrate_and_cutoff(
     result: CandidateResult,
     frames: Mapping[str, pd.DataFrame],
-    method: Literal["isotonic", "sigmoid"] = "sigmoid",
+    method: Literal["logit_intercept", "logit_platt", "sigmoid", "isotonic"] = "sigmoid",
     lgd: float = 0.6,
     margin: float = 0.10,
     approval_rates: tuple[float, ...] = (0.80, 0.85, 0.90, 0.95),
@@ -336,6 +338,86 @@ def calibrate_and_cutoff(
     return out
 
 
+def _one_se_choice(table: pd.DataFrame) -> tuple[pd.DataFrame, str, str]:
+    """Apply the one-standard-error rule to a method table.
+
+    Args:
+        table: Frame with columns method (in priority order, simplest first), brier and
+            se_vs_best (standard error of the per-row loss difference to the best method).
+
+    Returns:
+        Tuple (table with diff_vs_best and eligible added, chosen method, best method). The
+        chosen method is the first one whose Brier is within one standard error of the best.
+    """
+    out = table.copy()
+    best = str(out.loc[out["brier"].idxmin(), "method"])
+    out["diff_vs_best"] = out["brier"] - out["brier"].min()
+    out["eligible"] = out["diff_vs_best"] <= out["se_vs_best"]
+    chosen = str(out.loc[out["eligible"].idxmax(), "method"])
+    return out, chosen, best
+
+
+def select_calibrator(
+    model: object, val: pd.DataFrame, methods: tuple[str, ...] = CALIBRATION_METHODS
+) -> dict:
+    """Choose a calibration method by time-ordered two-fold validation inside `val`.
+
+    Folds: A is the first three vintages present, B the rest. Each method is fitted on A and
+    scored on B, then fitted on B and scored on A; the out-of-fold predictions are pooled.
+
+    Args:
+        model: Fitted model with `predict_proba` over raw application columns.
+        val: Validation frame with application columns, the target and the vintage.
+        methods: Candidate methods, simplest first.
+
+    Returns:
+        Dict with table (one row per method: method, brier, log_loss, ece, diff_vs_best,
+        se_vs_best, eligible), chosen (first method within one paired standard error of the
+        lowest pooled Brier), best (lowest pooled Brier) and fold_vintages ({"A": [...],
+        "B": [...]}).
+
+    Raises:
+        ValueError: If `val` has fewer than 4 vintages.
+    """
+    vintages = sorted(int(v) for v in val[TIME].unique())
+    if len(vintages) < 4:
+        raise ValueError(f"need at least 4 validation vintages, got {len(vintages)}")
+    fold_vintages = {"A": vintages[:3], "B": vintages[3:]}
+    in_a = val[TIME].isin(fold_vintages["A"]).to_numpy()
+    X, y = val[list(APPLICATION_COLUMNS)], val[TARGET].to_numpy()
+    sq_err: dict[str, np.ndarray] = {}
+    rows = []
+    for method in methods:
+        pooled = np.empty(len(val))
+        for fit_mask in (in_a, ~in_a):
+            cal = calibrate(model, X[fit_mask], pd.Series(y[fit_mask]), method)
+            pooled[~fit_mask] = positive_scores(cal, X[~fit_mask])
+        sq_err[method] = (pooled - y) ** 2
+        rows.append(
+            {
+                "method": method,
+                "brier": float(sq_err[method].mean()),
+                "log_loss": binary_metrics(y, pooled)["log_loss"],
+                "ece": expected_calibration_error(y, pooled),
+            }
+        )
+    table = pd.DataFrame(rows)
+    best_err = sq_err[str(table.loc[table["brier"].idxmin(), "method"])]
+    table["se_vs_best"] = [
+        float((sq_err[m] - best_err).std(ddof=1) / np.sqrt(len(y))) for m in table["method"]
+    ]
+    table, chosen, best = _one_se_choice(table)
+    logger.info("calibrator selection:\n%s\nchosen %s (best %s)", table.to_string(), chosen, best)
+    return {
+        "table": table[
+            ["method", "brier", "log_loss", "ece", "diff_vs_best", "se_vs_best", "eligible"]
+        ],
+        "chosen": chosen,
+        "best": best,
+        "fold_vintages": fold_vintages,
+    }
+
+
 def _vintage_table(y: pd.Series, pd_hat: np.ndarray, vintage: pd.Series) -> pd.DataFrame:
     """Summarize outcomes and predictions per vintage.
 
@@ -371,6 +453,7 @@ def evaluate_holdout(
     name: str,
     *,
     threshold: float,
+    reference_rate: float,
     n_boot: int = 1000,
     seed: int = 0,
 ) -> dict:
@@ -381,12 +464,13 @@ def evaluate_holdout(
         frame: Holdout frame (gap or test).
         name: Label for logging and the result.
         threshold: Approve applicants with PD at or below this value.
+        reference_rate: Constant prediction for the Brier skill (the training default rate).
         n_boot: Bootstrap resamples for the AUC interval.
         seed: Random seed.
 
     Returns:
-        Dict with name, metrics, auc_ci (lower, upper), ece, calibration_table, mean_pd,
-        observed_rate, per_vintage, threshold, approval_rate, bad_rate_approved.
+        Dict with name, metrics, brier_skill, auc_ci (lower, upper), ece, calibration_table,
+        mean_pd, observed_rate, per_vintage, threshold, approval_rate, bad_rate_approved.
     """
     logger.info("scoring holdout %s", name)
     y = frame[TARGET]
@@ -396,6 +480,7 @@ def evaluate_holdout(
     return {
         "name": name,
         "metrics": binary_metrics(y, scores),
+        "brier_skill": brier_skill_score(y, scores, reference_rate),
         "auc_ci": (lo, hi),
         "ece": expected_calibration_error(y, scores),
         "calibration_table": calibration_table(y, scores),

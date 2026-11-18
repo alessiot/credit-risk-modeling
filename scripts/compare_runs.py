@@ -38,7 +38,8 @@ def summarize(run: Run, with_test: bool = False) -> dict:
 
     Args:
         run: A successful CreditRiskFlow run.
-        with_test: Also include test AUC with its interval and test ECE.
+        with_test: Also include test AUC with its interval and test ECE; NaN and blank for a
+            run that did not score the test window.
 
     Returns:
         Dict with run id, created time, parameters, champion, CV, validation and gap-year
@@ -60,9 +61,14 @@ def summarize(run: Run, with_test: bool = False) -> dict:
     }
     if with_test:
         test = d.test_eval
-        row["test_auc"] = round(test["metrics"]["roc_auc"], 4)
-        row["test_auc_ci"] = f"[{test['auc_ci'][0]:.4f}, {test['auc_ci'][1]:.4f}]"
-        row["test_ece"] = round(test["ece"], 4)
+        if test is None:
+            row["test_auc"] = float("nan")
+            row["test_auc_ci"] = ""
+            row["test_ece"] = float("nan")
+        else:
+            row["test_auc"] = round(test["metrics"]["roc_auc"], 4)
+            row["test_auc_ci"] = f"[{test['auc_ci'][0]:.4f}, {test['auc_ci'][1]:.4f}]"
+            row["test_ece"] = round(test["ece"], 4)
     row["artifact"] = short_path(d.artifact_path)
     return row
 
@@ -79,7 +85,10 @@ def main() -> None:
     namespace(None)
     flow = Flow(FLOW)
     if args.run_id:
-        table = flow[args.run_id].data.test_eval["per_vintage"]
+        test = flow[args.run_id].data.test_eval
+        if test is None:
+            sys.exit(f"run {args.run_id} did not score the test window")
+        table = test["per_vintage"]
     else:
         runs = islice((r for r in flow.runs() if r.successful), args.last)
         table = pd.DataFrame([summarize(r, args.with_test) for r in runs])

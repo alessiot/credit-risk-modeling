@@ -3,18 +3,23 @@ import json
 import numpy as np
 import pandas as pd
 import pytest
+from scipy.special import expit
+from sklearn.base import BaseEstimator, ClassifierMixin
 
 from credit_risk.config import APPLICATION_COLUMNS, DEFAULT_PROTOCOL, FEATURE_SETS
 from credit_risk.data import load_raw
-from credit_risk.models import positive_scores
+from credit_risk.evaluation import brier_skill_score
+from credit_risk.models import CALIBRATION_METHODS, calibrate, positive_scores
 from credit_risk.pipeline import (
     Candidate,
     CandidateResult,
+    _one_se_choice,
     calibrate_and_cutoff,
     evaluate_holdout,
     load_sweep,
     package_model,
     score_applications,
+    select_calibrator,
     select_champion,
     split_frames,
     stability_report,
@@ -125,12 +130,28 @@ def test_calibrate_and_cutoff(champion, synthetic_frames):
     assert out["brier_after"] <= out["brier_before"] + 1e-3
 
 
+def ev_scores(cal, frames):
+    return positive_scores(cal, frames["test"][list(APPLICATION_COLUMNS)])
+
+
 def test_evaluate_holdout_and_stability(champion, synthetic_frames, caplog):
     cal = calibrate_and_cutoff(champion, synthetic_frames)["calibrated_model"]
     with caplog.at_level("INFO", logger="credit_risk.pipeline"):
-        ev = evaluate_holdout(cal, synthetic_frames["test"], "test", threshold=0.1428, n_boot=50)
+        ev = evaluate_holdout(
+            cal,
+            synthetic_frames["test"],
+            "test",
+            threshold=0.1428,
+            reference_rate=0.03,
+            n_boot=50,
+        )
     assert sum("scoring holdout test" in m for m in caplog.messages) == 1
     assert ev["auc_ci"][0] <= ev["metrics"]["roc_auc"] <= ev["auc_ci"][1]
+    assert ev["brier_skill"] == pytest.approx(
+        brier_skill_score(
+            synthetic_frames["test"]["default_12m"], ev_scores(cal, synthetic_frames), 0.03
+        )
+    )
     pv = ev["per_vintage"]
     assert pv["n"].sum() == len(synthetic_frames["test"])
     scores = positive_scores(cal, synthetic_frames["test"][list(APPLICATION_COLUMNS)])
@@ -144,9 +165,127 @@ def test_evaluate_holdout_and_stability(champion, synthetic_frames, caplog):
     assert rep["feature_psi"]["psi"].is_monotonic_decreasing
 
 
+def test_evaluate_holdout_requires_reference_rate(champion, synthetic_frames):
+    with pytest.raises(TypeError):
+        evaluate_holdout(champion.model, synthetic_frames["test"], "t", threshold=0.1)
+
+
+def test_calibrate_and_cutoff_logit_method(champion, synthetic_frames):
+    out = calibrate_and_cutoff(champion, synthetic_frames, method="logit_intercept")
+    y = synthetic_frames["val"]["default_12m"]
+    assert abs(out["val_scores_calibrated"].mean() - y.mean()) < 1e-9
+
+
+class _ColumnProb(ClassifierMixin, BaseEstimator):
+    """Stand-in fitted model whose probability is stored in the fico_score column."""
+
+    classes_ = np.array([0, 1])
+
+    def __sklearn_is_fitted__(self):
+        return True
+
+    def fit(self, X, y):
+        return self
+
+    def predict(self, X):
+        return (np.asarray(X["fico_score"]) > 0.5).astype(int)
+
+    def predict_proba(self, X):
+        p = np.asarray(X["fico_score"], dtype=float)
+        return np.column_stack([1 - p, p])
+
+
+def _val_frame(
+    slope, shift, n_per_vintage=5000, vintages=(202207, 202208, 202209, 202210, 202211, 202212)
+):
+    rng = np.random.default_rng(0)
+    n = n_per_vintage * len(vintages)
+    z = rng.normal(-3.0, 1.5, n)
+    y = (rng.random(n) < expit(z)).astype(int)
+    frame = pd.DataFrame({c: 0.0 for c in APPLICATION_COLUMNS}, index=range(n))
+    frame["fico_score"] = expit(slope * z + shift)
+    frame["vintage"] = np.repeat(vintages, n_per_vintage)
+    frame["default_12m"] = y
+    return frame
+
+
+def test_select_calibrator_distorted_scores_reject_shift_only():
+    out = select_calibrator(_ColumnProb(), _val_frame(slope=0.4, shift=-1.0))
+    t = out["table"].set_index("method")
+    assert out["fold_vintages"] == {"A": [202207, 202208, 202209], "B": [202210, 202211, 202212]}
+    assert list(t.index) == list(CALIBRATION_METHODS)
+    assert out["best"] == t["brier"].idxmin()
+    assert t.loc[out["best"], "diff_vs_best"] == 0
+    assert not t.loc["logit_intercept", "eligible"]
+    assert t["eligible"].idxmax() == out["chosen"] and t.loc[out["chosen"], "eligible"]
+    assert out["chosen"] != "logit_intercept"
+
+
+def test_select_calibrator_se_matches_independent_recompute():
+    val = _val_frame(slope=0.4, shift=-1.0, n_per_vintage=1500)
+    out = select_calibrator(_ColumnProb(), val)
+    in_a = val["vintage"].isin(out["fold_vintages"]["A"]).to_numpy()
+    y = val["default_12m"].to_numpy()
+    X = val[list(APPLICATION_COLUMNS)]
+    err = {}
+    for m in CALIBRATION_METHODS:
+        pooled = np.empty(len(val))
+        for fit_mask in (in_a, ~in_a):
+            cal = calibrate(_ColumnProb(), X[fit_mask], pd.Series(y[fit_mask]), m)
+            pooled[~fit_mask] = positive_scores(cal, X[~fit_mask])
+        err[m] = (pooled - y) ** 2
+    best = min(err, key=lambda m: err[m].mean())
+    assert out["best"] == best
+    t = out["table"].set_index("method")
+    for m in CALIBRATION_METHODS:
+        diff = err[m] - err[best]
+        assert t.loc[m, "se_vs_best"] == pytest.approx(diff.std(ddof=1) / np.sqrt(len(y)))
+        assert t.loc[m, "brier"] == pytest.approx(err[m].mean())
+        assert t.loc[m, "diff_vs_best"] == pytest.approx(err[m].mean() - err[best].mean())
+
+
+def test_select_calibrator_shift_only_picks_simplest():
+    out = select_calibrator(_ColumnProb(), _val_frame(slope=1.0, shift=-0.8))
+    assert out["chosen"] == "logit_intercept"
+
+
+def test_select_calibrator_needs_four_vintages():
+    with pytest.raises(ValueError, match="4"):
+        select_calibrator(_ColumnProb(), _val_frame(1.0, 0.0, 500, (202207, 202208, 202209)))
+
+
+def test_one_se_choice_simpler_within_one_se():
+    table = pd.DataFrame(
+        {
+            "method": ["a", "b", "c"],
+            "brier": [0.0301, 0.0300, 0.0310],
+            "se_vs_best": [0.0002, 0.0, 0.0003],
+        }
+    )
+    out, chosen, best = _one_se_choice(table)
+    assert best == "b" and chosen == "a"
+    assert out["eligible"].tolist() == [True, True, False]
+    assert out["diff_vs_best"].iloc[1] == 0
+
+
+def test_one_se_choice_none_within_one_se_picks_best():
+    table = pd.DataFrame(
+        {
+            "method": ["a", "b", "c"],
+            "brier": [0.0310, 0.0300, 0.0305],
+            "se_vs_best": [0.0002, 0.0, 0.0002],
+        }
+    )
+    out, chosen, best = _one_se_choice(table)
+    assert best == "b" and chosen == "b"
+    assert out["eligible"].tolist() == [False, True, False]
+
+
 def test_package_round_trip(champion, synthetic_frames, tmp_path):
     cal = calibrate_and_cutoff(champion, synthetic_frames)["calibrated_model"]
-    ev = evaluate_holdout(cal, synthetic_frames["test"], "test", threshold=0.1428, n_boot=20)
+    ev = evaluate_holdout(
+        cal, synthetic_frames["test"], "test", threshold=0.1428, reference_rate=0.03, n_boot=20
+    )
     out = package_model(
         cal,
         tmp_path / "m",

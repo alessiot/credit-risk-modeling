@@ -9,6 +9,7 @@ from credit_risk.evaluation import (
     binary_metrics,
     bootstrap_ci,
     breakeven_pd,
+    brier_skill_score,
     calibration_table,
     cutoff_table,
     expected_calibration_error,
@@ -201,3 +202,20 @@ def test_breakeven_nonfinite():
         breakeven_pd(float("nan"), 0.2)
     with pytest.raises(ValueError):
         breakeven_pd(0.5, float("inf"))
+
+
+def test_brier_skill_score(data):
+    y, _ = data
+    rate = float(y.mean())
+    assert brier_skill_score(y, np.full(len(y), rate), rate) == pytest.approx(0.0, abs=1e-12)
+    assert brier_skill_score(y, y.astype(float), rate) == pytest.approx(1.0)
+    assert brier_skill_score(y, np.full(len(y), 0.5), rate) < 0
+    expected = 1 - np.mean((0.3 - y) ** 2) / np.mean((rate - y) ** 2)
+    assert brier_skill_score(y, np.full(len(y), 0.3), rate) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("rate", [0.0, 1.0, -0.1, 1.5])
+def test_brier_skill_score_rejects_reference_rate(data, rate):
+    y, s = data
+    with pytest.raises(ValueError, match="reference_rate"):
+        brier_skill_score(y, s, rate)

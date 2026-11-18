@@ -15,6 +15,7 @@ from metaflow.cards import Markdown, Table
 
 from credit_risk import pipeline
 from credit_risk.config import DEFAULT_PROTOCOL, FEATURE_SETS, TARGET, SplitProtocol
+from credit_risk.models import CALIBRATION_METHODS
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +49,15 @@ class CreditRiskFlow(FlowSpec):
     val_end = Parameter("val_end", default=DEFAULT_PROTOCOL.val_end, type=int)
     test_start = Parameter("test_start", default=DEFAULT_PROTOCOL.test_start, type=int)
     test_end = Parameter("test_end", default=DEFAULT_PROTOCOL.test_end, type=int)
-    calibration = Parameter("calibration", default="sigmoid", help="sigmoid or isotonic")
+    calibration = Parameter(
+        "calibration", default="sigmoid", help=f"One of {', '.join(CALIBRATION_METHODS)}"
+    )
+    score_test = Parameter(
+        "score_test",
+        default=False,
+        type=bool,
+        help="Also score the test window (default: gap year only)",
+    )
     lgd = Parameter("lgd", default=0.6, type=float, help="Loss given default")
     margin = Parameter("margin", default=0.10, type=float, help="Margin on a good loan")
     seed = Parameter("seed", default=0, type=int)
@@ -60,6 +69,10 @@ class CreditRiskFlow(FlowSpec):
     def start(self) -> None:
         """Load and validate the data, build the splits and read the sweep."""
         _configure_logging()
+        if self.calibration not in CALIBRATION_METHODS:
+            raise ValueError(
+                f"calibration must be one of {CALIBRATION_METHODS}, got {self.calibration!r}"
+            )
         self.protocol = SplitProtocol(
             train_end=self.train_end,
             val_start=self.val_start,
@@ -132,23 +145,40 @@ class CreditRiskFlow(FlowSpec):
     @card
     @step
     def evaluate(self) -> None:
-        """Score the gap year and the test window once with the frozen model."""
+        """Score the gap year with the frozen model, and the test window only if asked."""
         _configure_logging()
         model = self.calib["calibrated_model"]
+        reference_rate = float(self.frames["train"][TARGET].mean())
         self.gap_eval = pipeline.evaluate_holdout(
-            model, self.frames["gap"], "gap", threshold=self.threshold, seed=self.seed
+            model,
+            self.frames["gap"],
+            "gap",
+            threshold=self.threshold,
+            reference_rate=reference_rate,
+            seed=self.seed,
         )
-        self.test_eval = pipeline.evaluate_holdout(
-            model, self.frames["test"], "test", threshold=self.threshold, seed=self.seed
+        self.test_eval = (
+            pipeline.evaluate_holdout(
+                model,
+                self.frames["test"],
+                "test",
+                threshold=self.threshold,
+                reference_rate=reference_rate,
+                seed=self.seed,
+            )
+            if self.score_test
+            else None
         )
         self.stability = pipeline.stability_report(model, self.frames)
         rows = []
-        for ev in (self.gap_eval, self.test_eval):
+        for ev in (e for e in (self.gap_eval, self.test_eval) if e is not None):
             rows.append(
                 [
                     ev["name"],
                     f"{ev['metrics']['roc_auc']:.4f}",
                     f"[{ev['auc_ci'][0]:.4f}, {ev['auc_ci'][1]:.4f}]",
+                    f"{ev['metrics']['brier']:.5f}",
+                    f"{ev['brier_skill']:.4f}",
                     f"{ev['ece']:.4f}",
                     f"{ev['mean_pd']:.4f}",
                     f"{ev['observed_rate']:.4f}",
@@ -158,6 +188,8 @@ class CreditRiskFlow(FlowSpec):
             )
         current.card.append(Markdown(f"## Champion: {self.champion.candidate.name}"))
         current.card.append(Markdown(self.explanation))
+        if not self.score_test:
+            current.card.append(Markdown("The test window was not scored in this run."))
         current.card.append(
             Table(
                 rows,
@@ -165,6 +197,8 @@ class CreditRiskFlow(FlowSpec):
                     "split",
                     "AUC",
                     "AUC 95% CI",
+                    "Brier",
+                    "Brier skill",
                     "ECE",
                     "mean PD",
                     "observed",
@@ -202,6 +236,7 @@ class CreditRiskFlow(FlowSpec):
             "leaderboard": self.leaderboard,
             "comparison": self.comparison,
             "calibration": self.calibration,
+            "score_test": self.score_test,
             "lgd": self.lgd,
             "margin": self.margin,
             "seed": self.seed,

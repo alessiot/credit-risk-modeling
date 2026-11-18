@@ -75,6 +75,29 @@ def binary_metrics(y_true: object, y_score: object) -> dict[str, float]:
     }
 
 
+def brier_skill_score(y_true: object, y_score: object, reference_rate: float) -> float:
+    """Brier skill against a constant prediction.
+
+    Args:
+        y_true: Binary labels.
+        y_score: Predicted probabilities.
+        reference_rate: Constant predicted by the reference, in (0, 1).
+
+    Returns:
+        1 - brier(model) / brier(constant `reference_rate`); 0 for the constant itself, 1 for a
+        perfect predictor, negative when the model is worse than the constant.
+
+    Raises:
+        ValueError: If `reference_rate` is not in (0, 1), or on invalid inputs.
+    """
+    if not 0 < reference_rate < 1:
+        raise ValueError(f"reference_rate must be in (0, 1): {reference_rate}")
+    y, s = _check_inputs(y_true, y_score)
+    model = float(np.mean((s - y) ** 2))
+    reference = float(np.mean((reference_rate - y) ** 2))
+    return 1.0 - model / reference
+
+
 def _resample_idx(pos: np.ndarray, neg: np.ndarray, rng: np.random.Generator) -> np.ndarray:
     """Draw a stratified bootstrap index sample.
 

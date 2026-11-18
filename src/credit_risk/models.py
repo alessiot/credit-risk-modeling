@@ -8,6 +8,8 @@ from typing import Any, Literal
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
+from scipy.optimize import brentq
+from scipy.special import expit, logit
 from sklearn.base import BaseEstimator, ClassifierMixin, TransformerMixin
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.compose import ColumnTransformer
@@ -18,13 +20,16 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
+from sklearn.tree import DecisionTreeClassifier
 
 from credit_risk.config import CATEGORICAL_INPUTS, FEATURE_SETS
 from credit_risk.features import make_preprocessor, output_columns
 
 logger = logging.getLogger(__name__)
 
-FAMILIES = ("base_rate", "logreg", "lgbm")
+FAMILIES = ("base_rate", "logreg", "lgbm", "scorecard")
+CALIBRATION_METHODS = ("logit_intercept", "logit_platt", "sigmoid", "isotonic")
+_LOGIT_CLIP = 1e-6
 
 MONOTONE_DIRECTIONS: dict[str, int] = {
     "fico_score": -1,
@@ -181,6 +186,82 @@ class QuantileBinner(TransformerMixin, BaseEstimator):
         return np.hstack(blocks)
 
 
+class SupervisedBinner(TransformerMixin, BaseEstimator):
+    """Bin each numeric column at the split points of a shallow decision tree on the target.
+
+    NaN gets its own bin, so missing placeholders keep their own default rate.
+
+    Attributes:
+        max_bins: Maximum number of bins per column (leaves of the tree).
+        min_bin_fraction: Minimum share of a column's non-NaN rows in each bin.
+    """
+
+    def __init__(self, max_bins: int = 6, min_bin_fraction: float = 0.05) -> None:
+        """Store the binning parameters.
+
+        Args:
+            max_bins: Maximum number of bins per column.
+            min_bin_fraction: Minimum share of non-NaN rows in each bin.
+        """
+        self.max_bins = max_bins
+        self.min_bin_fraction = min_bin_fraction
+
+    def fit(self, X: object, y: object = None) -> "SupervisedBinner":
+        """Learn the thresholds per column.
+
+        Args:
+            X: 2-d array-like; NaN allowed.
+            y: Binary target.
+
+        Returns:
+            self.
+
+        Raises:
+            ValueError: If `y` is None, its length differs from `X`, or a column is all NaN.
+        """
+        if y is None:
+            raise ValueError("SupervisedBinner needs y")
+        X = np.asarray(X, dtype=float)
+        y = np.asarray(y)
+        if X.ndim != 2 or len(y) != len(X):
+            raise ValueError(f"X must be 2-d and match y: {X.shape} vs {y.shape}")
+        self.thresholds_: list[np.ndarray] = []
+        for j, col in enumerate(X.T):
+            ok = ~np.isnan(col)
+            if not ok.any():
+                raise ValueError(f"column {j} is all NaN")
+            tree = DecisionTreeClassifier(
+                max_leaf_nodes=self.max_bins,
+                min_samples_leaf=int(np.ceil(self.min_bin_fraction * ok.sum())),
+                random_state=0,
+            ).fit(col[ok].reshape(-1, 1), y[ok])
+            split = tree.tree_.feature >= 0
+            self.thresholds_.append(np.sort(tree.tree_.threshold[split]))
+        self.n_features_in_ = X.shape[1]
+        return self
+
+    def transform(self, X: object) -> np.ndarray:
+        """Map values to integer bin ids.
+
+        Args:
+            X: 2-d array-like with the fitted number of columns.
+
+        Returns:
+            Float array of bin ids; NaN maps to `len(thresholds) + 1` of its column.
+
+        Raises:
+            ValueError: If the column count differs from the fit.
+        """
+        X = np.asarray(X, dtype=float)
+        if X.ndim != 2 or X.shape[1] != len(self.thresholds_):
+            raise ValueError(f"expected {len(self.thresholds_)} columns, got shape {X.shape}")
+        out = np.empty(X.shape)
+        for j, (col, thr) in enumerate(zip(X.T, self.thresholds_, strict=True)):
+            ids = np.searchsorted(thr, col, side="left").astype(float)
+            out[:, j] = np.where(np.isnan(col), len(thr) + 1, ids)
+        return out
+
+
 def _logreg_encoder(feature_set: str, n_bins: int) -> ColumnTransformer:
     """Build the binning and one-hot encoder for the logistic regression.
 
@@ -225,6 +306,53 @@ def _logreg_encoder(feature_set: str, n_bins: int) -> ColumnTransformer:
     return ColumnTransformer(parts, sparse_threshold=0.0)
 
 
+def _scorecard_encoder(
+    feature_set: str, max_bins: int, min_bin_fraction: float
+) -> ColumnTransformer:
+    """Build the supervised binning and one-hot encoder for the scorecard.
+
+    Args:
+        feature_set: Key of FEATURE_SETS.
+        max_bins: Maximum bins per numeric column.
+        min_bin_fraction: Minimum share of non-NaN rows per bin.
+
+    Returns:
+        ColumnTransformer over the preprocessor's output columns.
+    """
+    cols = output_columns(feature_set)
+    flags = [c for c in cols if c.endswith("_missing")]
+    cats = [c for c in cols if c in CATEGORICAL_INPUTS]
+    nums = [c for c in cols if c not in flags and c not in cats]
+    parts: list[tuple[str, Any, list[str]]] = [
+        (
+            "num",
+            Pipeline(
+                [
+                    ("bin", SupervisedBinner(max_bins=max_bins, min_bin_fraction=min_bin_fraction)),
+                    ("onehot", OneHotEncoder(handle_unknown="ignore")),
+                ]
+            ),
+            nums,
+        )
+    ]
+    if flags:
+        parts.append(("flags", "passthrough", flags))
+    if cats:
+        parts.append(
+            (
+                "cat",
+                Pipeline(
+                    [
+                        ("impute", SimpleImputer(strategy="most_frequent")),
+                        ("onehot", OneHotEncoder(handle_unknown="ignore")),
+                    ]
+                ),
+                cats,
+            )
+        )
+    return ColumnTransformer(parts, sparse_threshold=0.0)
+
+
 def build_model(
     family: str,
     feature_set: str = "full",
@@ -236,9 +364,10 @@ def build_model(
     """Build an unfitted pipeline from raw application columns to PD.
 
     Args:
-        family: One of "base_rate", "logreg", "lgbm".
+        family: One of "base_rate", "logreg", "lgbm", "scorecard".
         feature_set: Key of FEATURE_SETS.
-        params: Family hyperparameters (logreg: C, n_bins; lgbm: LGBMClassifier kwargs).
+        params: Family hyperparameters (logreg: C, n_bins; lgbm: LGBMClassifier kwargs;
+            scorecard: C, max_bins, min_bin_fraction).
         seed: Random seed.
         allow_leaky: Permit the "leaky" ablation feature set.
 
@@ -260,6 +389,18 @@ def build_model(
         steps.append(("model", DummyClassifier(strategy="prior")))
     elif family == "logreg":
         steps.append(("encode", _logreg_encoder(feature_set, params.get("n_bins", 10))))
+        steps.append(
+            ("model", LogisticRegression(C=params.get("C", 1.0), max_iter=2000, random_state=seed))
+        )
+    elif family == "scorecard":
+        steps.append(
+            (
+                "encode",
+                _scorecard_encoder(
+                    feature_set, params.get("max_bins", 6), params.get("min_bin_fraction", 0.05)
+                ),
+            )
+        )
         steps.append(
             ("model", LogisticRegression(C=params.get("C", 1.0), max_iter=2000, random_state=seed))
         )
@@ -382,23 +523,121 @@ def fit_model(
     )
 
 
+class LogitCalibrated(ClassifierMixin, BaseEstimator):
+    """Recalibrate a fitted model's probability on the log-odds scale without refitting it.
+
+    Attributes:
+        estimator: Fitted model with `predict_proba`; never refitted.
+        method: "logit_intercept" (shift only, slope fixed at 1) or "logit_platt" (shift and
+            slope).
+    """
+
+    def __init__(self, estimator: object, method: str = "logit_intercept") -> None:
+        """Store the base model and the method.
+
+        Args:
+            estimator: Fitted model with `predict_proba`.
+            method: "logit_intercept" or "logit_platt".
+        """
+        self.estimator = estimator
+        self.method = method
+
+    def _logit(self, X: pd.DataFrame) -> np.ndarray:
+        """Return the clipped log-odds of the base model's positive-class probability.
+
+        Args:
+            X: Features for the base model.
+
+        Returns:
+            Array of shape (n,).
+        """
+        p = self.estimator.predict_proba(X)[:, 1]
+        return logit(np.clip(p, _LOGIT_CLIP, 1 - _LOGIT_CLIP))
+
+    def fit(self, X: pd.DataFrame, y: object) -> "LogitCalibrated":
+        """Fit the shift (and slope) on `X`, `y`.
+
+        The intercept method solves sum(y - sigmoid(z + c)) = 0, the maximum-likelihood shift.
+
+        Args:
+            X: Features for the base model.
+            y: Binary target.
+
+        Returns:
+            self.
+
+        Raises:
+            ValueError: For an unknown method or a single-class target.
+        """
+        if self.method not in ("logit_intercept", "logit_platt"):
+            raise ValueError(f"unknown logit method {self.method!r}")
+        y = np.asarray(y)
+        if set(np.unique(y).tolist()) != {0, 1}:
+            raise ValueError("y must contain exactly the classes 0 and 1")
+        z = self._logit(X)
+        if self.method == "logit_intercept":
+            self.slope_ = 1.0
+            self.intercept_ = float(
+                brentq(lambda c: float(np.sum(y - expit(z + c))), -40.0, 40.0, xtol=1e-12)
+            )
+        else:
+            lr = LogisticRegression(C=np.inf, max_iter=2000).fit(z.reshape(-1, 1), y)
+            self.slope_ = float(lr.coef_[0, 0])
+            self.intercept_ = float(lr.intercept_[0])
+        self.classes_ = np.array([0, 1])
+        return self
+
+    def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
+        """Predict calibrated class probabilities.
+
+        Args:
+            X: Features for the base model.
+
+        Returns:
+            Array of shape (n, 2).
+        """
+        p = expit(self.slope_ * self._logit(X) + self.intercept_)
+        return np.column_stack([1 - p, p])
+
+    def predict(self, X: pd.DataFrame) -> np.ndarray:
+        """Predict class labels.
+
+        Args:
+            X: Features for the base model.
+
+        Returns:
+            Array of labels from `classes_`.
+        """
+        return self.classes_[self.predict_proba(X).argmax(axis=1)]
+
+
 def calibrate(
     model: Pipeline,
     X_val: pd.DataFrame,
     y_val: pd.Series,
-    method: Literal["isotonic", "sigmoid"],
-) -> CalibratedClassifierCV:
+    method: Literal["logit_intercept", "logit_platt", "sigmoid", "isotonic"],
+) -> CalibratedClassifierCV | LogitCalibrated:
     """Calibrate a fitted model on validation data without refitting it.
 
     Args:
         model: Fitted pipeline.
         X_val: Raw validation features.
         y_val: Validation target.
-        method: Calibration method.
+        method: One of `CALIBRATION_METHODS`.
 
     Returns:
-        Fitted CalibratedClassifierCV wrapping a FrozenEstimator.
+        Fitted LogitCalibrated for the logit methods, otherwise a fitted CalibratedClassifierCV
+        wrapping a FrozenEstimator.
+
+    Raises:
+        ValueError: For an unknown method.
     """
+    if method not in CALIBRATION_METHODS:
+        raise ValueError(
+            f"unknown calibration method {method!r}; choose from {CALIBRATION_METHODS}"
+        )
+    if method in ("logit_intercept", "logit_platt"):
+        return LogitCalibrated(model, method).fit(X_val, y_val)
     return CalibratedClassifierCV(FrozenEstimator(model), method=method).fit(X_val, y_val)
 
 

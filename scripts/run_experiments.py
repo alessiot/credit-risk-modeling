@@ -7,6 +7,7 @@ Usage:
     uv run python scripts/run_experiments.py              # all runs
     uv run python scripts/run_experiments.py --runs R02   # a subset
     uv run python scripts/run_experiments.py --smoke      # 3 trials per search, no outputs kept
+    uv run python scripts/run_experiments.py --references # post-test references R11, R12 only
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date
+from itertools import product
 from pathlib import Path
 from typing import Any
 
@@ -136,7 +138,9 @@ class RunSpec:
         params_from: Run whose best parameters are reused (ablations); None otherwise.
         weighted: Whether `sample_weight` is the training weight.
         selectable: Whether the run may be selected (False for the leakage ablation).
-        fixed_params: Parameters for a single fit when there is no search and no params_from.
+        fixed_params: Parameters for a single fit when there is no search and no params_from;
+            for a grid run, the parameters shared by every grid point.
+        grid: Parameter name to values for an exhaustive grid search; None otherwise.
     """
 
     run_id: str
@@ -150,6 +154,7 @@ class RunSpec:
     weighted: bool = False
     selectable: bool = True
     fixed_params: dict[str, Any] = field(default_factory=dict)
+    grid: dict[str, tuple[Any, ...]] | None = None
 
 
 RUNS: tuple[RunSpec, ...] = (
@@ -258,6 +263,33 @@ SENSITIVITY_RUNS: tuple[RunSpec, ...] = (
     ),
 )
 
+REFERENCE_RUNS: tuple[RunSpec, ...] = (
+    RunSpec(
+        "R11-lgbm-no-apr-untuned",
+        "lgbm",
+        "no_apr",
+        "Reference run after the test pass: untuned LightGBM, monotone constraints on, shows "
+        "how much of the tuned model's validation result tuning explains. LightGBM defaults "
+        "apply: n_estimators 100, learning_rate 0.1, num_leaves 31, min_child_samples 20, "
+        "reg_lambda 0, subsample 1, colsample_bytree 1.",
+        "Reported as a reference; CV and validation only.",
+        "n/a (reference run, never selectable, test window not read).",
+        selectable=False,
+    ),
+    RunSpec(
+        "R12-scorecard-no-apr",
+        "scorecard",
+        "no_apr",
+        "Reference run after the test pass: a supervised-bin scorecard (tree-based bins, "
+        "one-hot, L2 logistic regression) shows what a conventional scorecard reaches without "
+        "APR.",
+        "Reported as a reference; CV and validation only.",
+        "n/a (reference run, never selectable, test window not read).",
+        fixed_params={"min_bin_fraction": 0.05},
+        grid={"max_bins": (4, 6, 8), "C": (0.01, 0.1, 1.0)},
+    ),
+)
+
 
 def write_text(path: Path, text: str) -> None:
     """Write text, creating parent folders.
@@ -282,7 +314,17 @@ def manifest_head(spec: RunSpec, data_hash: str, lock_hash: str, min_delta: str)
     Returns:
         Markdown text.
     """
-    if spec.cap:
+    if spec.grid:
+        points = len(list(product(*spec.grid.values())))
+        grid_text = "; ".join(f"{k} in {list(v)}" for k, v in spec.grid.items())
+        search = (
+            f"- Search space: exhaustive grid of {points} configurations, {grid_text}; "
+            f"fixed {json.dumps(spec.fixed_params)}\n"
+            f"- Sampler: none\n- Run log: trials.csv\n\n"
+            f"## Stopping rule\n\n- Window: n/a\n- Minimum delta: n/a\n"
+            f"- Hard cap: {points} configurations (grid)\n"
+        )
+    elif spec.cap:
         search = (
             f"- Search space: {SPACE_TEXT[spec.family]}\n"
             f"- Sampler: TPE through Optuna (seed {SEED})\n"
@@ -371,10 +413,33 @@ def run_one(
             folds,
             sample_weight=weight,
             seed=SEED,
-            allow_leaky=not spec.selectable,
+            allow_leaky=spec.feature_set == "leaky",
         )
 
-    if spec.cap:
+    if spec.grid:
+        if not smoke:
+            write_text(run_dir / "manifest.md", manifest_head(spec, *hashes, "n/a"))
+            log_path = run_dir / "trials.csv"
+            log_path.unlink(missing_ok=True)
+        configs = [
+            dict(zip(spec.grid, point, strict=True)) for point in product(*spec.grid.values())
+        ]
+        if smoke:
+            configs = configs[:3]
+        scored = [cv({**spec.fixed_params, **config}) for config in configs]
+        best_i = int(np.argmax([r.cv_mean for r in scored]))
+        params = {**spec.fixed_params, **configs[best_i]}
+        trials, stop_reason = len(configs), "grid"
+        if not smoke:
+            best_so_far = np.maximum.accumulate([r.cv_mean for r in scored])
+            with log_path.open("w", newline="", encoding="utf-8") as fh:
+                writer = csv.writer(fh)
+                writer.writerow(["trial", "value", "best_so_far", "params"])
+                for i, (config, r) in enumerate(zip(configs, scored, strict=True)):
+                    writer.writerow(
+                        [i, r.cv_mean, best_so_far[i], json.dumps(config, sort_keys=True)]
+                    )
+    elif spec.cap:
         default = cv(DEFAULT_PARAMS[spec.family])
         min_delta = default.cv_se
         delta_text = (
@@ -417,7 +482,7 @@ def run_one(
         y,
         sample_weight=weight,
         seed=SEED,
-        allow_leaky=not spec.selectable,
+        allow_leaky=spec.feature_set == "leaky",
     )
     val_metrics = binary_metrics(val[TARGET], positive_scores(model, val))
     result = {
@@ -689,6 +754,11 @@ def main() -> None:
         action="store_true",
         help="rerun the tuned searches with two more seeds, double window and cap",
     )
+    parser.add_argument(
+        "--references",
+        action="store_true",
+        help="post-test reference runs (R11, R12) on CV and validation only; runs only these",
+    )
     args = parser.parse_args()
     level = "DEBUG" if args.verbose else os.environ.get("LOG_LEVEL", "INFO")
     logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -708,7 +778,25 @@ def main() -> None:
     if args.sensitivity:
         for spec in SENSITIVITY_RUNS:
             done[spec.run_id] = sensitivity_search(spec, train, val, folds, hashes)
-        write_leaderboard([done[s.run_id] for s in (*RUNS, *SENSITIVITY_RUNS) if s.run_id in done])
+        write_leaderboard(
+            [
+                done[s.run_id]
+                for s in (*RUNS, *SENSITIVITY_RUNS, *REFERENCE_RUNS)
+                if s.run_id in done
+            ]
+        )
+        return
+    if args.references:
+        for spec in REFERENCE_RUNS:
+            done[spec.run_id] = run_one(spec, train, val, folds, done, hashes, args.smoke)
+        if not args.smoke:
+            write_leaderboard(
+                [
+                    done[s.run_id]
+                    for s in (*RUNS, *SENSITIVITY_RUNS, *REFERENCE_RUNS)
+                    if s.run_id in done
+                ]
+            )
         return
     if args.convergence:
         for spec in selected:
@@ -724,7 +812,13 @@ def main() -> None:
             sys.exit(f"{spec.run_id} needs {spec.params_from} to have run first")
         done[spec.run_id] = run_one(spec, train, val, folds, done, hashes, args.smoke)
     if not args.smoke:
-        write_leaderboard([done[s.run_id] for s in (*RUNS, *SENSITIVITY_RUNS) if s.run_id in done])
+        write_leaderboard(
+            [
+                done[s.run_id]
+                for s in (*RUNS, *SENSITIVITY_RUNS, *REFERENCE_RUNS)
+                if s.run_id in done
+            ]
+        )
 
 
 if __name__ == "__main__":
