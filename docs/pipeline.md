@@ -39,8 +39,8 @@ training ends).
 
 **Parameter sweeps.** `flows/sweep.json` lists the candidates (family, feature set,
 hyperparameters, training weight). The `train` step fans out over them in parallel, and
-`select` applies the selection rule. The default sweep holds the five selectable configurations from
-the leaderboard, with hyperparameters tuned on the default training window. Runs do not
+`select` applies the selection rule. The default sweep holds the five non-baseline selectable
+runs (R02-R06) from the leaderboard, with hyperparameters tuned on the default training window. Runs do not
 re-tune, so a run with another `--train_end` reuses those hyperparameters.
 
 **Champion and challenger.** Every run records the champion and the runner-up and compares

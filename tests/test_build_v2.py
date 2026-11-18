@@ -294,38 +294,22 @@ def test_full_run_on_synthetic_data(tmp_path, synthetic_data, lock, monkeypatch)
         build_v2.run_full(**kwargs)
 
 
-def test_add_r13_appends_row_and_keeps_others(tmp_path):
-    board = tmp_path / "leaderboard.csv"
-    fields = run_experiments.LEADERBOARD_FIELDS
-    old = {f: "x" for f in fields} | {"run_id": "R05", "selected": "yes", "test_score": "0.7"}
-    with board.open("w", newline="") as fh:
-        writer = csv.DictWriter(fh, fieldnames=fields)
-        writer.writeheader()
-        writer.writerow(old)
-    result = tmp_path / "result.json"
-    result.write_text(
-        json.dumps(
-            {
-                "run_id": "R13-test",
-                "family": "lgbm",
-                "feature_set": "no_apr",
-                "val_auc_raw": 0.71234567,
-                "search": {
-                    "cv_auc_mean": 0.7,
-                    "cv_auc_se": 0.01,
-                    "trials": 90,
-                    "stop_reason": "plateau",
-                },
-            }
-        )
-    )
-    run_experiments.add_r13(result, board)
+def test_leaderboard_rebuild_keeps_r13_row(tmp_path, monkeypatch):
+    root = Path(__file__).resolve().parents[1]
+    with (root / "reports" / "leaderboard.csv").open(newline="") as fh:
+        current = {r["run_id"]: r for r in csv.DictReader(fh)}
+    r13_id = run_experiments.R13_RUN_ID
+    run_dir = tmp_path / "runs" / r13_id
+    run_dir.mkdir(parents=True)
+    (run_dir / "result.json").write_text((root / "runs" / r13_id / "result.json").read_text())
+    board = tmp_path / "reports" / "leaderboard.csv"
+    board.parent.mkdir()
+    board.write_text((root / "reports" / "leaderboard.csv").read_text())
+    monkeypatch.setattr(run_experiments, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(run_experiments, "LEADERBOARD", board)
+    # Rebuild with no registered results: only the R13 row is regenerated.
+    run_experiments.write_leaderboard([])
     with board.open(newline="") as fh:
         rows = list(csv.DictReader(fh))
-    assert rows[0] == old
-    new = rows[1]
-    assert new["run_id"] == "R13-test" and new["selectable"] == "no" and new["selected"] == "no"
-    assert new["cv_mean"] == "0.70000" and new["val_score"] == "0.71235"
-    assert new["trials"] == "90" and new["stop_reason"] == "plateau" and new["test_score"] == ""
-    with pytest.raises(FileExistsError):
-        run_experiments.add_r13(result, board)
+    assert [r["run_id"] for r in rows] == [r13_id]
+    assert rows[0] == current[r13_id]

@@ -71,7 +71,7 @@ stratified bootstrap used elsewhere in this card, v2 would pass. Run history:
 ## Selection
 
 - Rule, stated before any candidate ran: the simplest model within one `cv_se` of the best CV
-  ROC AUC (tiers: base rate and FICO-only logistic 0, binned logistic 1, monotone LightGBM 2;
+  ROC AUC (tiers: base rate 0, logistic regression 1 (FICO-only and binned), monotone LightGBM 2;
   then fewer features). Constraints: per-decision reasons, monotone in FICO and DTI, under
   100 ms per application.
 
@@ -91,8 +91,6 @@ stratified bootstrap used elsewhere in this card, v2 would pass. Run history:
 
 - Champion R05 vs challenger R03 on validation: AUC +0.0010 (paired bootstrap 95% CI -0.0040
   to +0.0061). APR is set by pricing, which is a further reason to leave it out.
-- Leaderboard check: 0 errors, 1 note (`outside-one-se`, caused by the non-selectable leaky
-  ablation R07).
 - Post-test runs are never selectable. R08 and R09 show R05 is about one `cv_se` under-tuned,
   but R09 is itself lightly fitted (88 three-leaf trees at learning rate 0.0135).
 
@@ -215,9 +213,10 @@ drop).
   protocol, data SHA-256, threshold, metrics, library versions, input columns, model-file
   SHA-256 checked on load). APR is not required.
 - `score_applications` raises `SchemaError` on a missing column; an unseen category is logged
-  and treated as missing. Latency: median 2.1 ms, p99 under 3 ms per application.
-- Reproducibility: `uv.lock`, seed 0. `tests/test_artifact.py` reproduces
-  `reports/test_predictions.csv` from the v1 artifact; the notebook does the same for v1.1.
+  and treated as missing. Latency: about 2 ms per application (median), under 3 ms at p99.
+- Reproducibility: `uv.lock`, seed 0. `tests/test_artifact.py` reloads v1, v1.1 and v2 and
+  reproduces their saved predictions (`reports/test_predictions.csv`,
+  `reports/test_predictions_v1.1.csv`, `reports/gap_predictions_v2.csv`).
 
 ## Deployment and monitoring
 
@@ -233,7 +232,8 @@ drop).
   0.25 (investigate).
 - At deployment, refit on all mature vintages and rerun the calibrator selection with the
   latest mature vintages added. The registered rule keeps v1.1. Choosing v2 instead would rest
-  on a single 2023 evaluation whose Brier and AUC intervals both include zero. No window is
+  on a single 2023 evaluation whose Brier and AUC intervals include zero under the registered
+  (unstratified) bootstrap and exclude it under the stratified one. No window is
   left here to test the refit.
 
 ## Limitations and open questions

@@ -54,18 +54,13 @@ def _metadata(proc: subprocess.CompletedProcess, out: Path) -> dict:
 
 
 @pytest.mark.slow
-def test_flow_end_to_end_does_not_score_test_by_default(tmp_path):
-    meta = _metadata(*_run_flow(tmp_path))
+def test_flow_default_run_does_not_score_test_and_reports_features(tmp_path):
+    proc, out = _run_flow(tmp_path)
+    meta = _metadata(proc, out)
     assert meta["metrics"]["test"] is None
     assert meta["metrics"]["gap"]["name"] == "gap"
     assert "brier_skill" in meta["metrics"]["gap"]
     assert meta["extra"]["score_test"] is False
-
-
-@pytest.mark.slow
-def test_flow_has_preprocess_step_with_feature_report(tmp_path):
-    proc, _ = _run_flow(tmp_path)
-    assert proc.returncode == 0, proc.stderr[-3000:]
     code = """
 import json
 from metaflow import Flow, namespace
@@ -73,9 +68,10 @@ from metaflow import Flow, namespace
 namespace(None)
 run = Flow("CreditRiskFlow").latest_run
 report = run["preprocess"].task.data.feature_report
-print(json.dumps({"steps": sorted(s.id for s in run.steps()), "splits": sorted(report["splits"])}))
+steps = [s.id for s in reversed(list(run.steps()))]
+print(json.dumps({"steps": steps, "splits": sorted(report["splits"])}))
 """
-    out = subprocess.run(
+    info_proc = subprocess.run(
         [sys.executable, "-c", code],
         cwd=tmp_path,
         env=os.environ
@@ -88,11 +84,17 @@ print(json.dumps({"steps": sorted(s.id for s in run.steps()), "splits": sorted(r
         text=True,
         check=False,
     )
-    assert out.returncode == 0, out.stderr[-2000:]
-    info = json.loads(out.stdout.strip().splitlines()[-1])
-    assert info["steps"] == sorted(
-        ["start", "preprocess", "train", "select", "calibrate", "evaluate", "end"]
-    )
+    assert info_proc.returncode == 0, info_proc.stderr[-2000:]
+    info = json.loads(info_proc.stdout.strip().splitlines()[-1])
+    assert info["steps"] == [
+        "start",
+        "preprocess",
+        "train",
+        "select",
+        "calibrate",
+        "evaluate",
+        "end",
+    ]
     assert info["splits"] == ["gap", "test", "train", "val"]
 
 

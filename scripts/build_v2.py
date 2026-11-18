@@ -8,7 +8,7 @@ the 2023 gap year next to v1 and v1.1. The 2024 test window is dropped on load a
 Usage:
     uv run python scripts/build_v2.py --register-only             # write the manifest and stop
     uv run python scripts/build_v2.py                             # search, build and score
-    uv run python scripts/build_v2.py --smoke --out-root /tmp/x   # 3 trials, one seed, temp output
+    uv run python scripts/build_v2.py --smoke --out-root outputs/smoke  # 3 trials, one seed
 """
 
 import argparse

@@ -53,7 +53,6 @@ def test_pipeline_takes_raw_placeholders(xy):
     assert (feats["fico_score"] == 99999).any()
     model = fit_model("lgbm", "full", LGBM, feats, y)
     assert isinstance(model.named_steps["model"], MonotoneLGBM)
-    assert len(model.named_steps["model"].feature_importances_) == 18
     assert model.named_steps["model"].booster_.num_trees() > 0
 
 

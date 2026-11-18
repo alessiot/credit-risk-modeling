@@ -112,11 +112,6 @@ class MonotoneLGBM(ClassifierMixin, BaseEstimator):
         return self.classes_[self.predict_proba(X).argmax(axis=1)]
 
     @property
-    def feature_importances_(self) -> np.ndarray:
-        """Split-count importances of the fitted model."""
-        return self.model_.feature_importances_
-
-    @property
     def booster_(self) -> lgb.Booster:
         """Underlying fitted booster."""
         return self.model_.booster_

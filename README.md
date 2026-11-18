@@ -127,7 +127,7 @@ pip install -r requirements.txt && pip install -e .
 
 ```bash
 scripts/check.sh                                   # ruff format check, ruff lint, tests
-uv run pytest -m slow                              # end-to-end pipeline test (about 20 s)
+uv run pytest -m slow                              # end-to-end pipeline tests (about 40 s)
 uv run python scripts/run_experiments.py           # all registered runs, rewrites the leaderboard
 uv run python scripts/run_experiments.py --convergence --runs R02 R03
 uv run python scripts/run_experiments.py --sensitivity    # converged LightGBM searches (R08, R09)
@@ -138,8 +138,8 @@ uv run jupyter nbconvert --to notebook --execute --inplace notebooks/modeling.ip
 ```
 
 Every source of randomness is seeded. Rerunning the experiments and the notebook reproduces the
-leaderboard and the test predictions exactly. `tests/test_artifact.py` reloads the saved model
-and checks it against `reports/test_predictions.csv`.
+leaderboard and the test predictions exactly. `tests/test_artifact.py` reloads the v1, v1.1
+and v2 models and checks them against their saved predictions in `reports/`.
 
 ## Pipeline, scoring and open questions
 

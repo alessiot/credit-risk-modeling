@@ -8,7 +8,6 @@ Usage:
     uv run python scripts/run_experiments.py --runs R02   # a subset
     uv run python scripts/run_experiments.py --smoke      # 3 trials per search, no outputs kept
     uv run python scripts/run_experiments.py --references # post-test references R11, R12 only
-    uv run python scripts/run_experiments.py --add-r13    # append R13 from its result.json
 """
 
 from __future__ import annotations
@@ -44,6 +43,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DATA_PATH = ROOT / "data" / "credit_risk_data_enhanced.csv"
 RUNS_DIR = ROOT / "runs"
 LEADERBOARD = ROOT / "reports" / "leaderboard.csv"
+R13_RUN_ID = "R13-lgbm-no-apr-logloss-v2"
 
 DATA_VERSION = "enhanced-v1"
 CV_SCHEME = "expanding-quarter-4"
@@ -704,8 +704,43 @@ def sensitivity_search(
     return result
 
 
+def r13_row() -> dict[str, str] | None:
+    """Build the R13 leaderboard row from its result.json, if the run exists.
+
+    R13 is written by scripts/build_v2.py, not by this script, so its result has a different
+    shape from the registered runs and is never selectable.
+
+    Returns:
+        The leaderboard row without the carried-over selection columns, or None when
+        runs/R13-lgbm-no-apr-logloss-v2/result.json does not exist.
+    """
+    path = RUNS_DIR / R13_RUN_ID / "result.json"
+    if not path.exists():
+        return None
+    result = json.loads(path.read_text(encoding="utf-8"))
+    search = result["search"]
+    return {
+        "data_version": DATA_VERSION,
+        "split_id": DEFAULT_PROTOCOL.split_id,
+        "cv_scheme": CV_SCHEME,
+        "metric": METRIC,
+        "direction": DIRECTION,
+        "run_id": result["run_id"],
+        "family": result["family"],
+        "feature_set": result["feature_set"],
+        "weighted": "no",
+        "selectable": "no",
+        "cv_mean": f"{search['cv_auc_mean']:.5f}",
+        "cv_se": f"{search['cv_auc_se']:.5f}",
+        "val_score": f"{result['val_auc_raw']:.5f}",
+        "trials": search["trials"],
+        "stop_reason": search["stop_reason"],
+        "manifest": f"../runs/{result['run_id']}/manifest.md",
+    }
+
+
 def write_leaderboard(results: list[dict[str, Any]]) -> None:
-    """Write reports/leaderboard.csv with one row per run.
+    """Write reports/leaderboard.csv with one row per run, plus R13 when its result exists.
 
     The `selected` and `test_score` columns are written by the analysis notebook after the
     test pass. They are carried over from the existing leaderboard so that adding runs does not
@@ -719,78 +754,44 @@ def write_leaderboard(results: list[dict[str, Any]]) -> None:
     if LEADERBOARD.exists():
         with LEADERBOARD.open(newline="", encoding="utf-8") as fh:
             recorded = {row["run_id"]: row for row in csv.DictReader(fh)}
+    rows: list[dict[str, str]] = []
+    for r in results:
+        rows.append(
+            {
+                "data_version": DATA_VERSION,
+                "split_id": DEFAULT_PROTOCOL.split_id,
+                "cv_scheme": CV_SCHEME,
+                "metric": METRIC,
+                "direction": DIRECTION,
+                "run_id": r["run_id"],
+                "family": r["family"],
+                "feature_set": r["feature_set"],
+                "weighted": "yes" if r["weighted"] else "no",
+                "selectable": "yes" if r["selectable"] else "no",
+                "cv_mean": f"{r['cv_mean']:.5f}",
+                "cv_se": f"{r['cv_se']:.5f}",
+                "val_score": f"{r['val_metrics']['roc_auc']:.5f}",
+                "trials": r["trials"],
+                "stop_reason": r["stop_reason"],
+                "manifest": f"../runs/{r['run_id']}/manifest.md",
+            }
+        )
+    r13 = r13_row()
+    if r13 is not None and all(row["run_id"] != r13["run_id"] for row in rows):
+        rows.append(r13)
     with LEADERBOARD.open("w", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=LEADERBOARD_FIELDS)
         writer.writeheader()
-        for r in results:
+        for row in rows:
+            old = recorded.get(row["run_id"], {})
             writer.writerow(
                 {
-                    "data_version": DATA_VERSION,
-                    "split_id": DEFAULT_PROTOCOL.split_id,
-                    "cv_scheme": CV_SCHEME,
-                    "metric": METRIC,
-                    "direction": DIRECTION,
-                    "run_id": r["run_id"],
-                    "family": r["family"],
-                    "feature_set": r["feature_set"],
-                    "weighted": "yes" if r["weighted"] else "no",
-                    "selectable": "yes" if r["selectable"] else "no",
-                    "cv_mean": f"{r['cv_mean']:.5f}",
-                    "cv_se": f"{r['cv_se']:.5f}",
-                    "val_score": f"{r['val_metrics']['roc_auc']:.5f}",
-                    "trials": r["trials"],
-                    "stop_reason": r["stop_reason"],
-                    "selected": recorded.get(r["run_id"], {}).get("selected", "no"),
-                    "test_score": recorded.get(r["run_id"], {}).get("test_score", ""),
-                    "manifest": f"../runs/{r['run_id']}/manifest.md",
+                    **row,
+                    "selected": old.get("selected", "no"),
+                    "test_score": old.get("test_score", ""),
                 }
             )
     logger.info("wrote %s", LEADERBOARD)
-
-
-def add_r13(result_path: Path, leaderboard: Path) -> None:
-    """Append the R13 row to an existing leaderboard, leaving every other row unchanged.
-
-    Args:
-        result_path: runs/R13.../result.json written by scripts/build_v2.py.
-        leaderboard: Leaderboard CSV to extend.
-
-    Raises:
-        FileExistsError: If the leaderboard already has the R13 row.
-    """
-    result = json.loads(result_path.read_text(encoding="utf-8"))
-    with leaderboard.open(newline="", encoding="utf-8") as fh:
-        rows = list(csv.DictReader(fh))
-    if any(r["run_id"] == result["run_id"] for r in rows):
-        raise FileExistsError(f"{result['run_id']} is already on {leaderboard}")
-    search = result["search"]
-    rows.append(
-        {
-            "data_version": DATA_VERSION,
-            "split_id": DEFAULT_PROTOCOL.split_id,
-            "cv_scheme": CV_SCHEME,
-            "metric": METRIC,
-            "direction": DIRECTION,
-            "run_id": result["run_id"],
-            "family": result["family"],
-            "feature_set": result["feature_set"],
-            "weighted": "no",
-            "selectable": "no",
-            "cv_mean": f"{search['cv_auc_mean']:.5f}",
-            "cv_se": f"{search['cv_auc_se']:.5f}",
-            "val_score": f"{result['val_auc_raw']:.5f}",
-            "trials": search["trials"],
-            "stop_reason": search["stop_reason"],
-            "selected": "no",
-            "test_score": "",
-            "manifest": f"../runs/{result['run_id']}/manifest.md",
-        }
-    )
-    with leaderboard.open("w", newline="", encoding="utf-8") as fh:
-        writer = csv.DictWriter(fh, fieldnames=LEADERBOARD_FIELDS)
-        writer.writeheader()
-        writer.writerows(rows)
-    logger.info("added %s to %s", result["run_id"], leaderboard)
 
 
 def main() -> None:
@@ -814,18 +815,10 @@ def main() -> None:
         action="store_true",
         help="post-test reference runs (R11, R12) on CV and validation only; runs only these",
     )
-    parser.add_argument(
-        "--add-r13",
-        action="store_true",
-        help="append R13 to the leaderboard from its result.json; runs nothing else",
-    )
     args = parser.parse_args()
     level = "DEBUG" if args.verbose else os.environ.get("LOG_LEVEL", "INFO")
     logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     optuna.logging.set_verbosity(optuna.logging.WARNING)
-    if args.add_r13:
-        add_r13(RUNS_DIR / "R13-lgbm-no-apr-logloss-v2" / "result.json", LEADERBOARD)
-        return
 
     train, val = load_frames()
     folds = expanding_quarter_folds(train[TIME], train[TARGET])

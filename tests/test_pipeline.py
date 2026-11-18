@@ -85,6 +85,13 @@ def test_select_simpler_within_one_se():
     assert champ is lr and chall is lgbm and "lr" in why
 
 
+def test_select_champion_accepts_scorecard_family():
+    lgbm = _result("gb", "lgbm", "no_apr", 0.700, 0.005)
+    card = _result("sc", "scorecard", "no_apr", 0.698, 0.005)
+    champ, chall, why = select_champion([lgbm, card])
+    assert champ is card and chall is lgbm and "sc" in why
+
+
 def test_select_best_outside_one_se():
     lgbm = _result("gb", "lgbm", "full", 0.700, 0.005)
     lr = _result("lr", "logreg", "full", 0.690, 0.002)
@@ -123,7 +130,7 @@ def test_train_candidate(champion):
 
 
 def test_calibrate_and_cutoff(champion, synthetic_frames):
-    out = calibrate_and_cutoff(champion, synthetic_frames)
+    out = calibrate_and_cutoff(champion, synthetic_frames, method="sigmoid")
     assert out["breakeven_pd"] == pytest.approx(0.1 / 0.7)
     assert len(out["val_scores_calibrated"]) == len(synthetic_frames["val"])
     assert len(out["cutoff_table"]) == 4
@@ -137,7 +144,7 @@ def ev_scores(cal, frames):
 
 
 def test_evaluate_holdout_and_stability(champion, synthetic_frames, caplog):
-    cal = calibrate_and_cutoff(champion, synthetic_frames)["calibrated_model"]
+    cal = calibrate_and_cutoff(champion, synthetic_frames, method="sigmoid")["calibrated_model"]
     with caplog.at_level("INFO", logger="credit_risk.pipeline"):
         ev = evaluate_holdout(
             cal,
@@ -346,7 +353,7 @@ def test_one_se_choice_none_within_one_se_picks_best():
 
 
 def test_package_round_trip(champion, synthetic_frames, tmp_path):
-    cal = calibrate_and_cutoff(champion, synthetic_frames)["calibrated_model"]
+    cal = calibrate_and_cutoff(champion, synthetic_frames, method="sigmoid")["calibrated_model"]
     ev = evaluate_holdout(
         cal, synthetic_frames["test"], "test", threshold=0.1428, reference_rate=0.03, n_boot=20
     )

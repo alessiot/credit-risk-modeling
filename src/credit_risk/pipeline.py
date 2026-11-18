@@ -52,7 +52,7 @@ from credit_risk.splits import assign_split, expanding_quarter_folds
 
 logger = logging.getLogger(__name__)
 
-_TIER = {"base_rate": 0, "logreg": 1, "lgbm": 2}
+_TIER = {"base_rate": 0, "logreg": 1, "scorecard": 1, "lgbm": 2}
 _SWEEP_KEYS = {"name", "family", "feature_set", "params", "weighted"}
 
 
@@ -290,7 +290,8 @@ def compare_champion_challenger(
 def calibrate_and_cutoff(
     result: CandidateResult,
     frames: Mapping[str, pd.DataFrame],
-    method: Literal["logit_intercept", "logit_platt", "sigmoid", "isotonic"] = "sigmoid",
+    *,
+    method: Literal["logit_intercept", "logit_platt", "sigmoid", "isotonic"],
     lgd: float = 0.6,
     margin: float = 0.10,
     approval_rates: tuple[float, ...] = (0.80, 0.85, 0.90, 0.95),
