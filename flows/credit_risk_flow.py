@@ -50,7 +50,7 @@ class CreditRiskFlow(FlowSpec):
     test_start = Parameter("test_start", default=DEFAULT_PROTOCOL.test_start, type=int)
     test_end = Parameter("test_end", default=DEFAULT_PROTOCOL.test_end, type=int)
     calibration = Parameter(
-        "calibration", default="sigmoid", help=f"One of {', '.join(CALIBRATION_METHODS)}"
+        "calibration", default="logit_intercept", help=f"One of {', '.join(CALIBRATION_METHODS)}"
     )
     score_test = Parameter(
         "score_test",

@@ -285,6 +285,7 @@ REFERENCE_RUNS: tuple[RunSpec, ...] = (
         "APR.",
         "Reported as a reference; CV and validation only.",
         "n/a (reference run, never selectable, test window not read).",
+        selectable=False,
         fixed_params={"min_bin_fraction": 0.05},
         grid={"max_bins": (4, 6, 8), "C": (0.01, 0.1, 1.0)},
     ),
@@ -429,7 +430,7 @@ def run_one(
         scored = [cv({**spec.fixed_params, **config}) for config in configs]
         best_i = int(np.argmax([r.cv_mean for r in scored]))
         params = {**spec.fixed_params, **configs[best_i]}
-        trials, stop_reason = len(configs), "grid"
+        trials, stop_reason = len(configs), "none"
         if not smoke:
             best_so_far = np.maximum.accumulate([r.cv_mean for r in scored])
             with log_path.open("w", newline="", encoding="utf-8") as fh:
@@ -703,12 +704,20 @@ def sensitivity_search(
 
 
 def write_leaderboard(results: list[dict[str, Any]]) -> None:
-    """Write reports/leaderboard.csv with one row per run (none selected yet).
+    """Write reports/leaderboard.csv with one row per run.
+
+    The `selected` and `test_score` columns are written by the analysis notebook after the
+    test pass. They are carried over from the existing leaderboard so that adding runs does not
+    erase the recorded selection.
 
     Args:
         results: Run results in registration order.
     """
     LEADERBOARD.parent.mkdir(parents=True, exist_ok=True)
+    recorded: dict[str, dict[str, str]] = {}
+    if LEADERBOARD.exists():
+        with LEADERBOARD.open(newline="", encoding="utf-8") as fh:
+            recorded = {row["run_id"]: row for row in csv.DictReader(fh)}
     with LEADERBOARD.open("w", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=LEADERBOARD_FIELDS)
         writer.writeheader()
@@ -730,8 +739,8 @@ def write_leaderboard(results: list[dict[str, Any]]) -> None:
                     "val_score": f"{r['val_metrics']['roc_auc']:.5f}",
                     "trials": r["trials"],
                     "stop_reason": r["stop_reason"],
-                    "selected": "no",
-                    "test_score": "",
+                    "selected": recorded.get(r["run_id"], {}).get("selected", "no"),
+                    "test_score": recorded.get(r["run_id"], {}).get("test_score", ""),
                     "manifest": f"../runs/{r['run_id']}/manifest.md",
                 }
             )

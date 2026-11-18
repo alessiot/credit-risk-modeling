@@ -1,0 +1,34 @@
+{
+  "run_id": "R12-scorecard-no-apr",
+  "family": "scorecard",
+  "feature_set": "no_apr",
+  "weighted": false,
+  "selectable": false,
+  "params": {
+    "min_bin_fraction": 0.05,
+    "max_bins": 4,
+    "C": 0.01
+  },
+  "fold_scores": [
+    0.6846437588307508,
+    0.6459168295187308,
+    0.6980822388759043,
+    0.6930150187202179
+  ],
+  "cv_mean": 0.6804144614864008,
+  "cv_se": 0.011828278149881204,
+  "val_metrics": {
+    "n": 6693.0,
+    "n_pos": 214.0,
+    "base_rate": 0.031973703869714626,
+    "mean_score": 0.03192610903334932,
+    "roc_auc": 0.7079251730609172,
+    "gini": 0.41585034612183436,
+    "ks": 0.3276971033663035,
+    "pr_auc": 0.07175636193544734,
+    "brier": 0.030439552070402075,
+    "log_loss": 0.1340185780393786
+  },
+  "trials": 9,
+  "stop_reason": "none"
+}

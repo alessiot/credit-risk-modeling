@@ -73,21 +73,23 @@ Expect calibration drift in the out-of-time test.
 ## Split protocol
 
 - `data_version`: `enhanced-v1`
-- `split_id`: `oot-v1`: train/CV 202101-202206, validation 202207-202212, gap 2023 (scored once
-  as a secondary out-of-time check), test 202401-202409.
+- `split_id`: `oot-v1`: train/CV 202101-202206, validation 202207-202212, gap 2023 (a secondary
+  out-of-time check, scored once with the frozen model and again post-hoc in R10), test 202401-202409.
 - `cv_scheme`: `expanding-quarter-4`: expanding window by calendar quarter inside 202101-202206.
   Fold k trains on quarters 1..k+1 and validates on quarter k+2, for k = 1..4 (4 folds,
   minimum 6 months of training). Minimum 50 positives in each validation fold.
 - `metric`: ROC AUC (`roc_auc`), unweighted.
 - `direction`: max
-- Test set: vintages 202401-202409, scored once after calibration and cutoff are frozen. The
+- Test set: vintages 202401-202409, scored once with the frozen model after calibration and
+  cutoff were fixed. Two later looks are disclosed under Leakage check (findings 4 and 5). The
   12-month gap (2023) before it matches production: on a 2024-01 decision date, the latest
   vintages with a full 12-month outcome are from 2022-12.
 - Validation set: vintages 202207-202212, used for calibration, cutoff and the top-two
   comparison. There is no gap between CV rows and the validation set, or between CV folds.
   This is a deliberate deviation from a label-horizon gap: rows are independent loans and no
-  feature uses another row's label, so overlapping outcome windows cannot leak labels.
-  The gap is kept where it makes the test realistic.
+  feature uses another row's label, so overlapping outcome windows cannot leak labels. What
+  overlap can do is make validation slightly optimistic, because it is closer in time to
+  training than production data would be. The gap is kept where it makes the test realistic.
 - `cv_se` computation: standard deviation of the 4 fold scores divided by sqrt(4). Expanding
   folds share training rows, so this understates the error. Close calls are settled with the
   paired bootstrap on the validation set.
@@ -114,9 +116,13 @@ Expect calibration drift in the out-of-time test.
      flag, monotone directions, fixed category levels) follow domain practice. The test window
      is therefore not pristine.
   4. After the test pass, one pipeline run with isotonic calibration was scored on the test
-     window to demonstrate run comparison. It informed no decision. The default run comparison
-     now shows validation and gap-year metrics only.
-  5. The no-leakage regression test permutes the target, weight, post-origination,
+     window to demonstrate run comparison. It informed no decision. The pipeline now scores the
+     test window only when `--score_test true` is passed.
+  5. After an external review found that the v1 PD loses to a constant on test Brier, one
+     registered post-hoc run (R10) recalibrated the frozen base model and scored the gap year
+     and test once. Its calibrator was chosen and fit on validation only. Its test figures are
+     a second look at the test window and are labeled as such.
+  6. The no-leakage regression test permutes the target, weight, post-origination,
      protected and time columns for every selectable feature set and checks that the
      features do not change.
 - The experiment script computes folds on the training window only and asserts that the
@@ -146,7 +152,10 @@ Expect calibration drift in the out-of-time test.
 
 ## Leaderboard summary
 
-- Leaderboard: `reports/leaderboard.csv` (8 runs, one manifest each under `runs/`).
+- Leaderboard: `reports/leaderboard.csv` (12 runs, one manifest each under `runs/`; R08, R09,
+  R11 and R12 ran after the test pass and are not selectable). The recalibration run R10
+  changes no model and has a manifest but no leaderboard row. R12's `stop_reason` is `none`
+  because it ran a full grid; its best point is at the grid edge, so it is unconverged.
 - Check result: 0 errors, 1 note. The note is `outside-one-se`: the best `cv_mean` belongs to
   R07-lgbm-leaky (1.000). That run is the leakage ablation, marked `selectable = no`, and is
   excluded by design. Among selectable runs, the best is R03-lgbm (0.7074, se 0.0070), and the
@@ -161,13 +170,15 @@ Expect calibration drift in the out-of-time test.
     - The recorded run found its best on its last trial, and the reruns stopped at exactly 61
       trials (fixed budgets in effect).
     - The R03 manifest records this as a dated deviation.
-  - **Sensitivity searches, after the test pass** (CV only, not selectable). Minimum delta
-    0.001, window 60, cap 400, seeds 0-2. All six stopped on the plateau, below the cap.
-    - R08 (with APR): seed bests 0.7074, 0.7038, 0.7079; best 0.7079 (cv_se 0.0065).
-    - R09 (no APR, tuned directly): 0.7087, 0.7070, 0.7076; best 0.7087 (cv_se 0.0067).
-    - Under the rule, the no-APR set has the best CV AUC, so the family choice holds.
-    - The frozen R05 configuration (0.7013) is about one cv_se below R09.
-- Curves: `runs/*/trials*.csv`, plotted in notebook sections 6.2 and 6.3.
+  - **Sensitivity searches, after the test pass** (CV only). Minimum delta 0.001, window 60,
+    cap 400, seeds 0-2, all stopped on the plateau. R08 (with APR) best 0.7079, R09 (no APR)
+    best 0.7087. The family choice holds, and the frozen R05 (0.7013) is about one cv_se
+    below R09.
+  - **Reference runs, after the test pass** (CV and validation only). R11, LightGBM with
+    library defaults: CV 0.6725, validation 0.6822. R12, supervised-bin scorecard (tree-chosen
+    bins, one-hot, L2 logistic regression): CV 0.6804, validation 0.7079. R12's best grid
+    point is at the grid edge (4 bins, C 0.01), so it is unconverged and a lower bound.
+- Trial logs: `runs/*/trials*.csv`, summarized in notebook section 6.2.
 - Ablations, all with R03's parameters:
 
 | Ablation | CV AUC | Difference | Paired per-fold difference |
@@ -198,9 +209,36 @@ Expect calibration drift in the out-of-time test.
     scaling over-stretches the top of the scale.
   - On the gap year, the first out-of-sample check: ECE 0.0088, mean PD 3.20% vs 2.57%
     observed, top decile 9.0% vs 6.2%.
-  - No held-out comparison of raw vs calibrated scores was made before freezing. In hindsight,
-    the calibrator shape is a weakness.
+  - No held-out comparison of raw vs calibrated scores was made before freezing.
 - Frozen on: 2026-11-18, before the test window was scored.
+- Flaw found after the test pass: the pipeline has no `decision_function`, so scikit-learn's
+  sigmoid calibration fit Platt scaling to the raw probability (a = -48.5, b = 5.10), not to
+  its log-odds. The map is exponential in the raw score. It stretches the top, and at the
+  bottom it lowers the raw 1.8% only to 1.45%, while the bottom two validation deciles default
+  at 0.3%.
+
+### Post-test recalibration (v1.1, run R10)
+
+- Registered in `runs/R10-calibration-v1.1/manifest.md` and committed before the run.
+  Published whatever it showed.
+- Base model: the frozen v1 pipeline. Only the calibrator changes.
+- Data: validation 2022-H2 only, mature at a 2024-01 decision date. Refitting on 2023 would use
+  labels not available at that date, so it is left to deployment.
+- Candidates, simplest first: log-odds shift, log-odds Platt (intercept and slope), v1's sigmoid
+  on the probability, isotonic.
+- Selection: fit on 202207-202209, score 202210-202212, and the reverse; pooled out-of-fold
+  Brier; simplest method within one paired standard error of the lowest.
+
+| Method | Out-of-fold Brier | Difference vs best | Paired SE | Eligible |
+|---|---|---|---|---|
+| Log-odds shift | 0.030531 | 0.000050 | 0.000142 | yes (chosen) |
+| Log-odds Platt | 0.030523 | 0.000041 | 0.000084 | yes |
+| Sigmoid on probability (v1) | 0.030659 | 0.000177 | 0.000082 | no |
+| Isotonic | 0.030481 | 0 | - | yes (lowest) |
+
+- Cutoff on v1.1 scores: the break-even PD (14.3%) approves every validation loan. The highest
+  v1.1 PD on test is 11.3%. Cutoff table on v1.1 validation scores: 80% approval at PD 0.0403
+  (bad rate declined 7.32%, 45.8% of bads declined).
 
 ## Test result
 
@@ -210,16 +248,41 @@ Expect calibration drift in the out-of-time test.
   - Paired CV folds: challenger ahead by 0.0061 (se 0.0021).
   - The rule chose the simpler model, and the APR dependency on pricing is a further reason.
 - `test_score`: ROC AUC 0.6800 on 202401-202409 (9,984 loans, 227 defaults). Gini 0.360,
-  KS 0.309, PR AUC 0.037, Brier 0.0226, ECE 0.0119.
+  KS 0.309, PR AUC 0.037, Brier 0.02264, ECE 0.0119.
+- Brier skill against a constant at the training default rate (3.21%), the best constant known
+  at the decision date: **-1.5% on test** (constant 0.02231) and +0.6% in the gap year. The v1 PD
+  is worse than that constant on test. It ranks, but it does not yet price. Bootstrap 95% CI
+  (2,000 resamples): -2.5% to -0.5%.
 - Interval: stratified bootstrap (1,000 resamples), 95% CI 0.651-0.708.
 - Compared with the validation score: validation AUC 0.7195 (CI 0.687-0.751), gap year 0.7124
-  (CI 0.689-0.737), test 0.680. Validation lacks a label-horizon gap and is probably optimistic.
-  The test interval (0.651-0.708) is the expected range for next-year ranking.
+  (CI 0.689-0.737), test 0.680. The intervals overlap. With 227 test defaults, the drop is
+  consistent with sampling noise plus the 2024 drift. It is not a sign of leakage. The test
+  interval (0.651-0.708) is the expected range for next-year ranking.
+- Ranking: the lowest-scored 20% of test loans default at 0.20% against 2.27% overall.
 - Level and shape:
-  - Mean PD on test is 3.21% against 2.27% observed (ratio 1.41).
-  - The top decile predicts 9.1% vs 3.9% observed.
-  - Both the 2023-24 fall in default rates and the Platt calibrator's top-end stretch
-    contribute.
+  - Mean PD on test is 3.21% against 2.27% observed (observed/predicted 0.71).
+  - The top decile predicts 9.1% vs 3.9% observed; the bottom decile 1.45% vs 0.10%.
+  - Both the 2023-24 fall in default rates and the calibrator flaw contribute. The top
+    decile's observed rate fell from 7.9% (validation) to 6.2% (gap) and 3.9% (test).
+- Post-hoc v1.1 (R10), second look at the test window:
+
+| | Brier | Brier skill | Mean PD | Top decile, pred vs obs | Bottom decile, pred vs obs |
+|---|---|---|---|---|---|
+| v1 | 0.02264 | -1.5% | 3.21% | 9.1% vs 3.9% | 1.45% vs 0.10% |
+| v1.1 | 0.02216 | +0.7% | 3.20% | 5.7% vs 3.9% | 1.87% vs 0.10% |
+| Raw scores | 0.02214 | +0.7% | 3.13% | 5.6% vs 3.9% | 1.82% vs 0.10% |
+
+  - v1.1 test skill 95% bootstrap CI: +0.4% to +1.0%. In the gap year, skill moves from +0.6%
+    (v1) to +1.3% (v1.1).
+  - The uncalibrated scores do as well as v1.1, so v1's calibrator caused the loss.
+  - Diagnostics with calibrators fit on the test labels (in-sample references, not bounds and
+    not models): a level shift alone reaches 1.0% skill, isotonic 1.4%. Roughly half of the
+    remaining error is the 2024 level and half is shape.
+  - The manifest expected the shape fix to help the bottom of the scale. It did not: the bottom
+    decile is 1.87% vs 0.10%, worse than v1's 1.45%. The rule picked a one-parameter log-odds
+    shift, which cannot change shape. The raw bottom deciles are distinct (1.82%, 1.89%,
+    2.07%), and isotonic fit on test brings the bottom decile to 0.06%, so a richer calibrator
+    fit on more defaults could recover it.
 - Cutoff on test: the break-even cutoff declines 97 loans (1.0%), of which 4 default (4.1%,
   far below break-even). In the gap year it declines 119 loans, 11 default (9.2%). With this
   calibration, the cutoff declines profitable loans and should not be used before
@@ -258,7 +321,8 @@ Expect calibration drift in the out-of-time test.
 - Reasons for an individual decision: yes. The largest positive SHAP contributions give the
   adverse-action reasons, and monotone constraints keep their direction consistent. The
   notebook shows one example.
-  - Platt calibration is monotone, so it does not change the ranking of reasons.
+  - Both calibrators (v1 Platt, v1.1 log-odds shift) are monotone, so they do not change the
+    ranking of reasons.
 
 ## Sensitive attributes
 
@@ -286,6 +350,9 @@ Expect calibration drift in the out-of-time test.
 - Environment: `uv.lock`, seed 0 everywhere, data SHA-256 in the metadata.
   `tests/test_artifact.py` reloads the artifact and reproduces the stored test predictions
   (`reports/test_predictions.csv`).
+- Post-hoc artifact `models/pd-lgbm-no-apr-v1.1/`: the same base pipeline with the v1.1
+  calibrator, same input schema. `reports/test_predictions_v1.1.csv` holds v1 and v1.1 PDs,
+  and the notebook checks that the artifact reproduces them.
 - Refit for deployment: none yet. Recommended v2: R09's configuration refit on all mature
   vintages (through 2023), with recalibration and a fresh out-of-time check on the most recent
   mature vintages.
@@ -316,8 +383,11 @@ Expect calibration drift in the out-of-time test.
   - matured-vintage AUC below 0.65 (retrain);
   - feature or score PSI above 0.25 (investigate, then retrain).
 
-  At the time of the test, the observed/predicted ratio is 0.71 (2.27% / 3.21%), so
-  recalibration is already due.
+  At the time of the test, the observed/predicted ratio is 0.71 (2.27% / 3.21%; also 0.71 for
+  the post-hoc v1.1 at 3.20%), so recalibration is already due. For scoring from 2025, rerun
+  the R10 selection on 2022-H2 plus 2023 outcomes (555 defaults instead of 214), where a
+  calibrator that can change shape may clear the rule. There is no later window here to test
+  that refit.
 
 ## Limitations and open questions
 
@@ -334,13 +404,14 @@ Expect calibration drift in the out-of-time test.
   4. Whether declined applications are available. Default: none, so no reject inference.
   5. Real LGD and margin for the cutoff. Default: 60% and 10%, illustrative only.
 - Other limitations:
-  - Platt calibration over-stretches the top decile. It was kept because it was frozen before
-    the test.
+  - The v1 calibrator was fit on the probability instead of the log-odds, and the v1 PD loses
+    to a constant on test Brier. The post-hoc v1.1 removes the top-end stretch but not the
+    bottom-of-scale miss.
   - The frozen model is under-tuned relative to the converged search (R05 0.7013 vs R09 0.7087
     CV AUC), because the original LightGBM stopping rule was too coarse.
   - The test window is not pristine: 2023-24 outcome rates were examined in EDA, and an
     isotonic pipeline variant was scored on it after the freeze. Neither changed a decision.
-  - CV and validation have no label-horizon gap, so they may be slightly optimistic. Only the
-    test AUC is quoted as expected performance.
+  - CV and validation are closer in time to training than production data would be, so they
+    may be slightly optimistic. Only the test AUC is quoted as expected performance.
   - The data looks synthetic (independent uniform features, generated post-origination
     columns).
