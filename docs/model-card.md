@@ -6,7 +6,8 @@
 break-even cutoff declines nobody, so the score's use is ranking: pricing tiers, limits and an
 approval-rate policy. On the 2023 gap year, v2 (R13, tuned on log loss) is better on ranking, Brier, ECE and the bottom decile, and worse on mean level and the top decile
 than v1.1 (Brier skill +1.6% vs +1.3%; bottom decile 0.90% vs 1.87% predicted against 0.38%
-observed). It misses its pre-registered bar, so v1.1 stays the recommended model. Run history:
+observed). It misses its pre-registered bar, so v1.1 stays the recommended model; under the
+stratified bootstrap used elsewhere in this card, v2 would pass. Run history:
 `reports/leaderboard.csv` and `runs/*/manifest.md`.
 
 ## Decision, label and data
@@ -178,6 +179,7 @@ drop).
   v1.1. Of the registered expectations, less compression at the bottom was met and higher
   gap-year skill was met on the point estimate only. "A larger or more flexible model" was
   only partly met: more boosting, but not more leaves.
+- The verdict is fragile. The registered script resampled rows without stratifying, while every other comparison in this repository uses a bootstrap stratified by outcome. Under that stratified bootstrap the interval is -0.000140 to -0.000010 (seeds 0-2 agree), entirely below zero, and v2 would pass. The registered result stands because the committed code defines the rule; the gap between v1.1 and v2 is small either way (Brier skill +1.3% vs +1.6%), and neither prices. The stratified AUC interval (+0.0001 to +0.0124) also excludes zero.
 - Deciles are formed per model, so the bottom and top rows hold different loans. On v1.1's
   own bottom decile v2 predicts 0.91% (observed 0.38%); on v1.1's top decile it predicts 7.65%
   (observed 6.18%), so the comparison holds on identical loans.

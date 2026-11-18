@@ -13,7 +13,8 @@
 - **The scale is compressed at the bottom.** The lowest test decile predicts 1.87% against
   0.10% observed. [v2](#v2-tuned-on-log-loss), tuned on log loss, halves that compression in
   2023 and is better on ranking and Brier there, but worse on mean level and the top decile. It
-  misses its pre-registered bar, so v1.1 stays the recommended model.
+  misses its pre-registered bar by a margin that reverses under a stratified bootstrap, so
+  v1.1 stays the recommended model, narrowly.
 
 The [notebook](notebooks/modeling.ipynb) is the main deliverable (executed, outputs saved).
 The [model card](docs/model-card.md) records every decision with its numbers, and
@@ -75,7 +76,7 @@ changes the tuning objective and the calibration data:
 | Bottom decile, predicted vs observed | 1.87% vs 0.38% | 0.90% vs 0.38% | |
 
 The registered rule required the Brier interval to lie entirely below zero. Its upper bound is
-+0.000004, so v1.1 stays the recommended model and v2 is reported. v2 is worse on mean level
++0.000004, so v1.1 stays the recommended model and v2 is reported. The verdict is fragile: the registered script resampled rows without stratifying, while every other comparison in this repository uses a bootstrap stratified by outcome. Under that stratified bootstrap the interval is -0.000140 to -0.000010 (seeds 0-2 agree), entirely below zero, and v2 would pass. The registered result stands because the committed code defines the rule; the gap between v1.1 and v2 is small either way (Brier skill +1.3% vs +1.6%), and neither prices. v2 is worse on mean level
 (3.27% vs 3.20%, against 2.57% observed) and on the top decile (7.8% vs 6.4% observed, where
 v1.1 is 5.7% vs 6.2%). Next steps: refit on all mature vintages at
 deployment, with the calibrator selection rerun on the latest outcomes, and evaluate on a new
@@ -99,9 +100,11 @@ flows/sweep.json           candidate configurations for the pipeline sweep
 models/pd-lgbm-no-apr-v1/  packaged model (calibrated pipeline + metadata.json), frozen
 models/pd-lgbm-no-apr-v1.1/ same base model, recalibrated after the test pass
 models/pd-lgbm-no-apr-v2/  v2, tuned on log loss (R13); evaluated on 2023 only
-reports/                   leaderboard, test predictions (v1; v1 and v1.1)
+reports/                   leaderboard, test predictions (v1; v1 and v1.1), gap-year predictions
+                           (v1, v1.1, v2)
 runs/                      one manifest, result and trial log per experiment
 docs/model-card.md         model card
+docs/pipeline.md           Metaflow pipeline, run comparison, scoring, departures from the brief
 tests/                     pytest suite (unit, artifact reproduction, end-to-end flow)
 ```
 
@@ -138,101 +141,10 @@ Every source of randomness is seeded. Rerunning the experiments and the notebook
 leaderboard and the test predictions exactly. `tests/test_artifact.py` reloads the saved model
 and checks it against `reports/test_predictions.csv`.
 
-## Pipeline (Metaflow)
+## Pipeline, scoring and open questions
 
-```
-start      load and validate the CSV (schema, value domains, uniqueness), build out-of-time splits
-train      foreach candidate in the sweep: expanding-window CV on the training window,
-           fit, score validation
-select     join: champion by the one-standard-error rule, challenger = best other candidate,
-           paired bootstrap on validation AUC
-calibrate  calibration on validation (default: log-odds shift, as in v1.1); cutoff from LGD
-           and margin
-evaluate   score the 2023 gap year (and the 2024 test window only with --score_test true);
-           per-vintage metrics, calibration, Brier skill, PSI; Metaflow card
-end        save the calibrated pipeline and metadata to outputs/models/<run id>/
-```
-
-Run it:
-
-```bash
-uv run python flows/credit_risk_flow.py run                          # defaults
-uv run python flows/credit_risk_flow.py run --calibration isotonic   # change one parameter
-uv run python flows/credit_risk_flow.py run --score_test true        # also score the test window
-uv run python flows/credit_risk_flow.py run --sweep my_sweep.json --train_end 202203 --val_start 202204
-uv run python flows/credit_risk_flow.py card view evaluate           # metrics card of the latest run
-```
-
-All parameters: `data_path`, `sweep`, `train_end`, `val_start`, `val_end`, `test_start`,
-`test_end`, `calibration` (`logit_intercept`, `logit_platt`, `sigmoid`, `isotonic`), `lgd`,
-`margin`, `seed`, `score_test` (default false), `output_dir`. The protocol rejects
-inconsistent boundaries (for example, a validation window that does not start the month after
-training ends).
-
-**Parameter sweeps.** `flows/sweep.json` lists the candidates (family, feature set,
-hyperparameters, training weight). The `train` step fans out over them in parallel, and
-`select` applies the selection rule. The default sweep holds the five selectable configurations from
-the leaderboard, with hyperparameters tuned on the default training window. Runs do not
-re-tune, so a run with another `--train_end` reuses those hyperparameters.
-
-**Champion and challenger.** Every run records the champion and the runner-up and compares
-them with a paired bootstrap on validation AUC. To compare pipeline variants (calibration
-method, training window, sweep), run the flow with different parameters and compare runs:
-
-```bash
-uv run python scripts/compare_runs.py --last 5             # validation and gap-year metrics
-uv run python scripts/compare_runs.py --last 5 --with-test # adds test metrics
-uv run python scripts/compare_runs.py --run-id <run id>    # per-vintage test table
-```
-
-Example with the default run and an isotonic-calibration run (the default table leaves out test
-metrics, so variants are compared on validation and the 2023 gap year):
-
-```
-          run_id          created            sweep  train_end     calibration    champion  cv_auc  val_auc  gap_auc  gap_ece                        artifact
-1795033986547329 2026-11-18 15:33 flows/sweep.json     202206        isotonic lgbm_no_apr  0.7013   0.7195   0.7109   0.0083 outputs/models/1795033986547329
-1795033965013512 2026-11-18 15:32 flows/sweep.json     202206 logit_intercept lgbm_no_apr  0.7013   0.7195   0.7124   0.0100 outputs/models/1795033965013512
-```
-
-`--with-test` adds test AUC and ECE for runs made with `--score_test true`. Use it to report a
-chosen variant, not to choose one: picking a variant by its test score turns the test window
-into a tuning set. Neither run above scored the test window. An earlier isotonic run, made
-before test scoring became opt-in, did, as a demonstration. It informed no decision.
-
-Each artifact folder holds `model.joblib` (the calibrated pipeline from raw application
-columns to PD) and `metadata.json`. The metadata has the candidate, parameters, split protocol,
-data SHA-256, cutoff, metrics, library versions, the input columns the model needs (12; APR is
-not one), and a hash of the model file that is checked on load. Scoring one application takes
-about 2 ms. To score new applications:
-
-```python
-from credit_risk.pipeline import score_applications
-
-pd_scores = score_applications(
-    "models/pd-lgbm-no-apr-v1", applications_df
-)  # checks the input schema
-```
-
-## Departures from the brief and the template
-
-- **Logging.** Code reports through `logging`, not `print`. Log levels come from `LOG_LEVEL`.
-- **No catch-all error handling.** Invalid data raises specific exceptions (`SchemaError`,
-  `DataValidationError`, `ValueError`) with every failure listed. Metaflow's `@retry` covers
-  transient failures in the training step only.
-- **Warnings are not suppressed.** The test suite treats warnings as errors.
-- **One gradient-boosting library.** LightGBM only; XGBoost and CatBoost are not dependencies.
-- **No resampling.** `imbalanced-learn` was not needed.
-
-## Open questions for the data owners
-
-1. What is the snapshot date? Are outcomes for 2023-10 to 2024-09 final? They are treated as
-   final here.
-2. Are `loan_amount`, `term` and `apr` the requested values, or the approved and priced ones?
-   Is APR set before or after the risk decision?
-3. What does `sample_weight` represent? It encodes the outcome.
-4. Are declined applications available for reject inference?
-5. What loss-given-default and margin figures should set the cutoff? The values used here
-   (LGD 60%, margin 10%) are illustrative.
-
-The dataset generator referenced in the original brief (`scripts/generate_enhanced_data.py`)
-was not provided, so this repository treats the CSV as the source of truth.
+- [`docs/pipeline.md`](docs/pipeline.md): the Metaflow pipeline (steps, parameters, parameter
+  sweeps, champion and challenger, run comparison), how to score new applications with the
+  recommended v1.1 artifact, and where the code departs from the brief.
+- [`docs/model-card.md`](docs/model-card.md): every modeling decision with its numbers, and
+  the open questions for the data owners with the default used for each.
