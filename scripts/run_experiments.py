@@ -8,6 +8,7 @@ Usage:
     uv run python scripts/run_experiments.py --runs R02   # a subset
     uv run python scripts/run_experiments.py --smoke      # 3 trials per search, no outputs kept
     uv run python scripts/run_experiments.py --references # post-test references R11, R12 only
+    uv run python scripts/run_experiments.py --add-r13    # append R13 from its result.json
 """
 
 from __future__ import annotations
@@ -747,6 +748,51 @@ def write_leaderboard(results: list[dict[str, Any]]) -> None:
     logger.info("wrote %s", LEADERBOARD)
 
 
+def add_r13(result_path: Path, leaderboard: Path) -> None:
+    """Append the R13 row to an existing leaderboard, leaving every other row unchanged.
+
+    Args:
+        result_path: runs/R13.../result.json written by scripts/build_v2.py.
+        leaderboard: Leaderboard CSV to extend.
+
+    Raises:
+        FileExistsError: If the leaderboard already has the R13 row.
+    """
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    with leaderboard.open(newline="", encoding="utf-8") as fh:
+        rows = list(csv.DictReader(fh))
+    if any(r["run_id"] == result["run_id"] for r in rows):
+        raise FileExistsError(f"{result['run_id']} is already on {leaderboard}")
+    search = result["search"]
+    rows.append(
+        {
+            "data_version": DATA_VERSION,
+            "split_id": DEFAULT_PROTOCOL.split_id,
+            "cv_scheme": CV_SCHEME,
+            "metric": METRIC,
+            "direction": DIRECTION,
+            "run_id": result["run_id"],
+            "family": result["family"],
+            "feature_set": result["feature_set"],
+            "weighted": "no",
+            "selectable": "no",
+            "cv_mean": f"{search['cv_auc_mean']:.5f}",
+            "cv_se": f"{search['cv_auc_se']:.5f}",
+            "val_score": f"{result['val_auc_raw']:.5f}",
+            "trials": search["trials"],
+            "stop_reason": search["stop_reason"],
+            "selected": "no",
+            "test_score": "",
+            "manifest": f"../runs/{result['run_id']}/manifest.md",
+        }
+    )
+    with leaderboard.open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=LEADERBOARD_FIELDS)
+        writer.writeheader()
+        writer.writerows(rows)
+    logger.info("added %s to %s", result["run_id"], leaderboard)
+
+
 def main() -> None:
     """Parse arguments and run the registered experiments."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -768,10 +814,18 @@ def main() -> None:
         action="store_true",
         help="post-test reference runs (R11, R12) on CV and validation only; runs only these",
     )
+    parser.add_argument(
+        "--add-r13",
+        action="store_true",
+        help="append R13 to the leaderboard from its result.json; runs nothing else",
+    )
     args = parser.parse_args()
     level = "DEBUG" if args.verbose else os.environ.get("LOG_LEVEL", "INFO")
     logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     optuna.logging.set_verbosity(optuna.logging.WARNING)
+    if args.add_r13:
+        add_r13(RUNS_DIR / "R13-lgbm-no-apr-logloss-v2" / "result.json", LEADERBOARD)
+        return
 
     train, val = load_frames()
     folds = expanding_quarter_folds(train[TIME], train[TARGET])

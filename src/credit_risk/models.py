@@ -16,8 +16,9 @@ from sklearn.compose import ColumnTransformer
 from sklearn.dummy import DummyClassifier
 from sklearn.frozen import FrozenEstimator
 from sklearn.impute import SimpleImputer
+from sklearn.isotonic import IsotonicRegression
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import log_loss, roc_auc_score
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
 from sklearn.tree import DecisionTreeClassifier
@@ -418,12 +419,18 @@ class CVResult:
         cv_mean: Mean of fold_scores.
         cv_se: Standard error, std(ddof=1) / sqrt(n_folds).
         oof: Out-of-fold scores; NaN for rows never in a validation fold.
+        fold_log_loss: Log loss per fold.
+        ll_mean: Mean of fold_log_loss.
+        ll_se: Standard error of fold_log_loss, std(ddof=1) / sqrt(n_folds).
     """
 
     fold_scores: list[float]
     cv_mean: float
     cv_se: float
     oof: pd.Series
+    fold_log_loss: list[float]
+    ll_mean: float
+    ll_se: float
 
 
 def _fit_pipeline(
@@ -474,21 +481,27 @@ def cross_validate(
         allow_leaky: Permit the "leaky" ablation feature set.
 
     Returns:
-        CVResult with per-fold ROC AUC and out-of-fold scores.
+        CVResult with per-fold ROC AUC and log loss and out-of-fold scores.
     """
     w = None if sample_weight is None else np.asarray(sample_weight)
     oof = pd.Series(np.nan, index=X.index, dtype=float)
     scores: list[float] = []
+    losses: list[float] = []
     for i, (tr, va) in enumerate(folds):
         model = build_model(family, feature_set, params, seed, allow_leaky=allow_leaky)
         _fit_pipeline(model, X.iloc[tr], y.iloc[tr], None if w is None else w[tr])
         pred = positive_scores(model, X.iloc[va])
         oof.iloc[va] = pred
         scores.append(float(roc_auc_score(y.iloc[va], pred)))
-        logger.info("%s/%s fold %d AUC %.4f", family, feature_set, i, scores[-1])
-    arr = np.asarray(scores)
-    se = float(arr.std(ddof=1) / np.sqrt(len(arr))) if len(arr) > 1 else float("nan")
-    return CVResult(scores, float(arr.mean()), se, oof)
+        losses.append(float(log_loss(y.iloc[va], pred, labels=[0, 1])))
+        logger.info(
+            "%s/%s fold %d AUC %.4f log loss %.4f", family, feature_set, i, scores[-1], losses[-1]
+        )
+    arr, ll = np.asarray(scores), np.asarray(losses)
+    n = len(arr)
+    se = float(arr.std(ddof=1) / np.sqrt(n)) if n > 1 else float("nan")
+    ll_se = float(ll.std(ddof=1) / np.sqrt(n)) if n > 1 else float("nan")
+    return CVResult(scores, float(arr.mean()), se, oof, losses, float(ll.mean()), ll_se)
 
 
 def fit_model(
@@ -521,6 +534,51 @@ def fit_model(
     return _fit_pipeline(
         build_model(family, feature_set, params, seed, allow_leaky=allow_leaky), X, y, w
     )
+
+
+def _check_binary_target(y: object) -> np.ndarray:
+    """Return `y` as an array after checking that it holds exactly the classes 0 and 1.
+
+    Args:
+        y: Binary target.
+
+    Returns:
+        The target as a numpy array.
+
+    Raises:
+        ValueError: If `y` does not contain both classes 0 and 1 and nothing else.
+    """
+    arr = np.asarray(y)
+    if set(np.unique(arr).tolist()) != {0, 1}:
+        raise ValueError("y must contain exactly the classes 0 and 1")
+    return arr
+
+
+def _fit_logit_shift(z: np.ndarray, y: np.ndarray, method: str) -> tuple[float, float]:
+    """Fit the log-odds recalibration map z -> slope * z + intercept.
+
+    The intercept method solves sum(y - sigmoid(z + c)) = 0, the maximum-likelihood shift, with
+    the slope fixed at 1; the Platt method fits shift and slope by unpenalized logistic
+    regression.
+
+    Args:
+        z: Clipped log-odds of the base probability.
+        y: Binary target with both classes.
+        method: "logit_intercept" or "logit_platt".
+
+    Returns:
+        Tuple (slope, intercept).
+
+    Raises:
+        ValueError: For an unknown method.
+    """
+    if method == "logit_intercept":
+        c = brentq(lambda c: float(np.sum(y - expit(z + c))), -40.0, 40.0, xtol=1e-12)
+        return 1.0, float(c)
+    if method == "logit_platt":
+        lr = LogisticRegression(C=np.inf, max_iter=2000).fit(z.reshape(-1, 1), y)
+        return float(lr.coef_[0, 0]), float(lr.intercept_[0])
+    raise ValueError(f"unknown logit method {method!r}")
 
 
 class LogitCalibrated(ClassifierMixin, BaseEstimator):
@@ -571,19 +629,8 @@ class LogitCalibrated(ClassifierMixin, BaseEstimator):
         """
         if self.method not in ("logit_intercept", "logit_platt"):
             raise ValueError(f"unknown logit method {self.method!r}")
-        y = np.asarray(y)
-        if set(np.unique(y).tolist()) != {0, 1}:
-            raise ValueError("y must contain exactly the classes 0 and 1")
-        z = self._logit(X)
-        if self.method == "logit_intercept":
-            self.slope_ = 1.0
-            self.intercept_ = float(
-                brentq(lambda c: float(np.sum(y - expit(z + c))), -40.0, 40.0, xtol=1e-12)
-            )
-        else:
-            lr = LogisticRegression(C=np.inf, max_iter=2000).fit(z.reshape(-1, 1), y)
-            self.slope_ = float(lr.coef_[0, 0])
-            self.intercept_ = float(lr.intercept_[0])
+        y = _check_binary_target(y)
+        self.slope_, self.intercept_ = _fit_logit_shift(self._logit(X), y, self.method)
         self.classes_ = np.array([0, 1])
         return self
 
@@ -597,6 +644,107 @@ class LogitCalibrated(ClassifierMixin, BaseEstimator):
             Array of shape (n, 2).
         """
         p = expit(self.slope_ * self._logit(X) + self.intercept_)
+        return np.column_stack([1 - p, p])
+
+    def predict(self, X: pd.DataFrame) -> np.ndarray:
+        """Predict class labels.
+
+        Args:
+            X: Features for the base model.
+
+        Returns:
+            Array of labels from `classes_`.
+        """
+        return self.classes_[self.predict_proba(X).argmax(axis=1)]
+
+
+class ScoreCalibrator(BaseEstimator):
+    """Recalibrate raw probabilities, fit on (probability, label) pairs.
+
+    Attributes:
+        method: "logit_intercept" (shift on the log-odds scale), "logit_platt" (shift and slope)
+            or "isotonic" (monotone step function, output clipped to [1e-6, 1 - 1e-6]).
+    """
+
+    def __init__(self, method: str = "logit_intercept") -> None:
+        """Store the method.
+
+        Args:
+            method: "logit_intercept", "logit_platt" or "isotonic".
+        """
+        self.method = method
+
+    def fit(self, p: object, y: object) -> "ScoreCalibrator":
+        """Fit the recalibration map.
+
+        Args:
+            p: Raw positive-class probabilities.
+            y: Binary target aligned to `p`.
+
+        Returns:
+            self.
+
+        Raises:
+            ValueError: For an unknown method or a target without both classes.
+        """
+        if self.method not in ("logit_intercept", "logit_platt", "isotonic"):
+            raise ValueError(f"unknown score calibration method {self.method!r}")
+        p = np.asarray(p, dtype=float)
+        y = _check_binary_target(y)
+        if self.method == "isotonic":
+            self.isotonic_ = IsotonicRegression(out_of_bounds="clip", y_min=0.0, y_max=1.0).fit(
+                p, y
+            )
+        else:
+            z = logit(np.clip(p, _LOGIT_CLIP, 1 - _LOGIT_CLIP))
+            self.slope_, self.intercept_ = _fit_logit_shift(z, y, self.method)
+        return self
+
+    def transform(self, p: object) -> np.ndarray:
+        """Map raw probabilities to calibrated ones.
+
+        Args:
+            p: Raw positive-class probabilities.
+
+        Returns:
+            Calibrated probabilities of shape (n,).
+        """
+        p = np.asarray(p, dtype=float)
+        if self.method == "isotonic":
+            return np.clip(self.isotonic_.predict(p), _LOGIT_CLIP, 1 - _LOGIT_CLIP)
+        z = logit(np.clip(p, _LOGIT_CLIP, 1 - _LOGIT_CLIP))
+        return expit(self.slope_ * z + self.intercept_)
+
+
+class PrecalibratedModel(ClassifierMixin, BaseEstimator):
+    """A fitted base model followed by a fitted score calibrator; neither is ever refitted.
+
+    Attributes:
+        estimator: Fitted model with `predict_proba`.
+        calibrator: Fitted ScoreCalibrator.
+    """
+
+    def __init__(self, estimator: object, calibrator: ScoreCalibrator) -> None:
+        """Store the fitted parts.
+
+        Args:
+            estimator: Fitted model with `predict_proba`.
+            calibrator: Fitted ScoreCalibrator.
+        """
+        self.estimator = estimator
+        self.calibrator = calibrator
+        self.classes_ = np.array([0, 1])
+
+    def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
+        """Predict calibrated class probabilities.
+
+        Args:
+            X: Features for the base model.
+
+        Returns:
+            Array of shape (n, 2).
+        """
+        p = self.calibrator.transform(self.estimator.predict_proba(X)[:, 1])
         return np.column_stack([1 - p, p])
 
     def predict(self, X: pd.DataFrame) -> np.ndarray:

@@ -4,12 +4,15 @@ import numpy as np
 import pandas as pd
 import pytest
 from scipy.special import expit, logit
+from sklearn.metrics import log_loss
 
 from credit_risk.config import FEATURE_SETS, SELECTABLE_FEATURE_SETS
 from credit_risk.models import (
     CALIBRATION_METHODS,
     LogitCalibrated,
     MonotoneLGBM,
+    PrecalibratedModel,
+    ScoreCalibrator,
     SupervisedBinner,
     build_model,
     calibrate,
@@ -79,6 +82,19 @@ def test_cross_validate(xy, raw_sample):
     assert res.oof.drop(res.oof.index[val]).isna().all()
     base = cross_validate("base_rate", "full", None, feats, y, folds)
     assert base.fold_scores == [0.5] * 3
+
+
+def test_cross_validate_records_fold_log_loss(xy, raw_sample):
+    feats, y = xy
+    folds = expanding_quarter_folds(raw_sample["vintage"], y, n_folds=3, min_positives=1)
+    res = cross_validate("logreg", "full", {"C": 0.5}, feats, y, folds)
+    expected = []
+    for tr, va in folds:
+        model = fit_model("logreg", "full", {"C": 0.5}, feats.iloc[tr], y.iloc[tr])
+        expected.append(log_loss(y.iloc[va], positive_scores(model, feats.iloc[va]), labels=[0, 1]))
+    np.testing.assert_allclose(res.fold_log_loss, expected)
+    assert res.ll_mean == pytest.approx(np.mean(expected))
+    assert res.ll_se == pytest.approx(np.std(expected, ddof=1) / np.sqrt(3))
 
 
 def test_calibrate_does_not_refit(xy):
@@ -206,6 +222,65 @@ def test_logit_calibrated_clips_extremes_and_rejects_single_class():
     with pytest.raises(ValueError, match="unknown logit method"):
         LogitCalibrated(_FixedProb(), "x").fit(X, [0, 1, 0, 1])
     assert logit(1e-6) < logit(0.5)
+
+
+def test_score_calibrator_intercept_matches_mean_exactly():
+    X, y, z = _score_frame()
+    p = expit(z - 1.0)
+    cal = ScoreCalibrator("logit_intercept").fit(p, y)
+    assert cal.transform(p).mean() == pytest.approx(y.mean(), abs=1e-9)
+    ref = calibrate(_FixedProb(), pd.DataFrame({"p": p}), y, "logit_intercept")
+    assert cal.intercept_ == pytest.approx(ref.intercept_)
+
+
+def test_score_calibrator_platt_matches_logit_calibrated():
+    X, y, z = _score_frame(seed=2)
+    p = expit(0.6 * z - 0.5)
+    cal = ScoreCalibrator("logit_platt").fit(p, y)
+    ref = calibrate(_FixedProb(), pd.DataFrame({"p": p}), y, "logit_platt")
+    assert cal.slope_ == pytest.approx(ref.slope_) and cal.intercept_ == pytest.approx(
+        ref.intercept_
+    )
+
+
+def test_score_calibrator_isotonic_monotone_and_bounded():
+    X, y, z = _score_frame(seed=3)
+    p = expit(z)
+    cal = ScoreCalibrator("isotonic").fit(p, y)
+    grid = np.linspace(0.0, 1.0, 500)
+    out = cal.transform(grid)
+    assert np.all(np.diff(out) >= -1e-15)
+    assert out.min() >= 1e-6 and out.max() <= 1 - 1e-6
+
+
+def test_score_calibrator_rejects_bad_inputs():
+    with pytest.raises(ValueError, match="unknown score calibration"):
+        ScoreCalibrator("x").fit([0.1, 0.2], [0, 1])
+    with pytest.raises(ValueError, match="classes"):
+        ScoreCalibrator("isotonic").fit([0.1, 0.2], [0, 0])
+
+
+class _NoFit:
+    """Base model with predict_proba only; a refit would raise AttributeError."""
+
+    def predict_proba(self, X):
+        p = np.asarray(X["p"], dtype=float)
+        return np.column_stack([1 - p, p])
+
+
+@pytest.mark.parametrize("method", ["logit_intercept", "logit_platt", "isotonic"])
+def test_precalibrated_model_equals_calibrator_and_pickles(method):
+    X, y, _ = _score_frame()
+    cal = ScoreCalibrator(method).fit(X["p"], y)
+    model = PrecalibratedModel(_NoFit(), cal)
+    proba = model.predict_proba(X)
+    assert proba.shape == (len(X), 2)
+    np.testing.assert_allclose(proba[:, 1], cal.transform(X["p"]))
+    np.testing.assert_allclose(proba.sum(axis=1), 1.0)
+    assert list(model.classes_) == [0, 1]
+    clone = pickle.loads(pickle.dumps(model))
+    np.testing.assert_array_equal(clone.predict_proba(X), proba)
+    assert set(model.predict(X)) <= {0, 1}
 
 
 def test_supervised_binner_finds_step_and_handles_nan():

@@ -9,7 +9,7 @@ from sklearn.base import BaseEstimator, ClassifierMixin
 from credit_risk.config import APPLICATION_COLUMNS, DEFAULT_PROTOCOL, FEATURE_SETS
 from credit_risk.data import load_raw
 from credit_risk.evaluation import brier_skill_score
-from credit_risk.models import CALIBRATION_METHODS, calibrate, positive_scores
+from credit_risk.models import CALIBRATION_METHODS, ScoreCalibrator, calibrate, positive_scores
 from credit_risk.pipeline import (
     Candidate,
     CandidateResult,
@@ -20,6 +20,7 @@ from credit_risk.pipeline import (
     package_model,
     score_applications,
     select_calibrator,
+    select_calibrator_blocks,
     select_champion,
     split_frames,
     stability_report,
@@ -252,6 +253,68 @@ def test_select_calibrator_shift_only_picks_simplest():
 def test_select_calibrator_needs_four_vintages():
     with pytest.raises(ValueError, match="4"):
         select_calibrator(_ColumnProb(), _val_frame(1.0, 0.0, 500, (202207, 202208, 202209)))
+
+
+def _block_data(slope, shift, n_per_block=3000, blocks=("a", "b", "c", "d")):
+    rng = np.random.default_rng(1)
+    n = n_per_block * len(blocks)
+    z = rng.normal(-3.0, 1.5, n)
+    y = (rng.random(n) < expit(z)).astype(int)
+    return expit(slope * z + shift), y, np.repeat(blocks, n_per_block)
+
+
+def test_select_calibrator_blocks_is_leave_one_block_out(monkeypatch):
+    p, y, blocks = _block_data(0.5, -0.5, n_per_block=1000)
+    fits = []
+    real_fit = ScoreCalibrator.fit
+
+    def spy(self, p_fit, y_fit):
+        fits.append((self.method, len(p_fit)))
+        return real_fit(self, p_fit, y_fit)
+
+    monkeypatch.setattr(ScoreCalibrator, "fit", spy)
+    out = select_calibrator_blocks(p, y, blocks)
+    assert out["blocks"] == ["a", "b", "c", "d"]
+    assert len(fits) == 3 * 4 and all(n == 3000 for _, n in fits)
+    monkeypatch.undo()
+    t = out["table"].set_index("method")
+    for method in ("logit_intercept", "logit_platt", "isotonic"):
+        pooled = np.empty(len(y))
+        for b in out["blocks"]:
+            held = blocks == b
+            pooled[held] = ScoreCalibrator(method).fit(p[~held], y[~held]).transform(p[held])
+        assert t.loc[method, "brier"] == pytest.approx(np.mean((pooled - y) ** 2))
+    assert list(out["table"].columns) == [
+        "method",
+        "brier",
+        "log_loss",
+        "ece",
+        "diff_vs_best",
+        "se_vs_best",
+        "eligible",
+    ]
+    assert out["chosen"] in t.index and out["best"] == t["brier"].idxmin()
+
+
+def test_select_calibrator_blocks_distorted_scores_reject_shift_only():
+    p, y, blocks = _block_data(0.4, -1.0)
+    assert select_calibrator_blocks(p, y, blocks)["chosen"] != "logit_intercept"
+
+
+def test_select_calibrator_blocks_shift_only_picks_simplest():
+    p, y, blocks = _block_data(1.0, -0.8)
+    assert select_calibrator_blocks(p, y, blocks)["chosen"] == "logit_intercept"
+
+
+def test_select_calibrator_blocks_rejects_bad_blocks():
+    p, y, blocks = _block_data(1.0, 0.0, n_per_block=500, blocks=("a", "b"))
+    with pytest.raises(ValueError, match="3 blocks"):
+        select_calibrator_blocks(p, y, blocks)
+    p, y, blocks = _block_data(1.0, 0.0, n_per_block=500, blocks=("a", "b", "c"))
+    y = y.copy()
+    y[blocks == "c"] = 0
+    with pytest.raises(ValueError, match="both classes"):
+        select_calibrator_blocks(p, y, blocks)
 
 
 def test_one_se_choice_simpler_within_one_se():

@@ -39,6 +39,7 @@ from credit_risk.features import clean_special_values
 from credit_risk.models import (
     CALIBRATION_METHODS,
     FAMILIES,
+    ScoreCalibrator,
     calibrate,
     cross_validate,
     fit_model,
@@ -415,6 +416,74 @@ def select_calibrator(
         "chosen": chosen,
         "best": best,
         "fold_vintages": fold_vintages,
+    }
+
+
+def select_calibrator_blocks(
+    p: np.ndarray,
+    y: np.ndarray,
+    blocks: np.ndarray,
+    methods: tuple[str, ...] = ("logit_intercept", "logit_platt", "isotonic"),
+) -> dict:
+    """Choose a calibration method by leave-one-block-out over raw scores.
+
+    Each method is fitted on every block but one and scored on the held-out block; the
+    out-of-fold predictions are pooled and the one-standard-error rule picks the method.
+
+    Args:
+        p: Raw positive-class probabilities.
+        y: Binary target aligned to `p`.
+        blocks: Block id per row (for example a quarter).
+        methods: Candidate methods, simplest first.
+
+    Returns:
+        Dict with table (one row per method: method, brier, log_loss, ece, diff_vs_best,
+        se_vs_best, eligible), chosen (first method within one paired standard error of the
+        lowest pooled Brier), best (lowest pooled Brier) and blocks (sorted block ids).
+
+    Raises:
+        ValueError: If there are fewer than 3 blocks or a block lacks one of the classes.
+    """
+    p, y, blocks = np.asarray(p, dtype=float), np.asarray(y), np.asarray(blocks)
+    ids = sorted(np.unique(blocks).tolist())
+    if len(ids) < 3:
+        raise ValueError(f"need at least 3 blocks, got {len(ids)}")
+    for b in ids:
+        if set(np.unique(y[blocks == b]).tolist()) != {0, 1}:
+            raise ValueError(f"block {b} must contain both classes")
+    sq_err: dict[str, np.ndarray] = {}
+    rows = []
+    for method in methods:
+        pooled = np.empty(len(y))
+        for b in ids:
+            held = blocks == b
+            cal = ScoreCalibrator(method).fit(p[~held], y[~held])
+            pooled[held] = cal.transform(p[held])
+        sq_err[method] = (pooled - y) ** 2
+        rows.append(
+            {
+                "method": method,
+                "brier": float(sq_err[method].mean()),
+                "log_loss": binary_metrics(y, pooled)["log_loss"],
+                "ece": expected_calibration_error(y, pooled),
+            }
+        )
+    table = pd.DataFrame(rows)
+    best_err = sq_err[str(table.loc[table["brier"].idxmin(), "method"])]
+    table["se_vs_best"] = [
+        float((sq_err[m] - best_err).std(ddof=1) / np.sqrt(len(y))) for m in table["method"]
+    ]
+    table, chosen, best = _one_se_choice(table)
+    logger.info(
+        "block calibrator selection:\n%s\nchosen %s (best %s)", table.to_string(), chosen, best
+    )
+    return {
+        "table": table[
+            ["method", "brier", "log_loss", "ece", "diff_vs_best", "se_vs_best", "eligible"]
+        ],
+        "chosen": chosen,
+        "best": best,
+        "blocks": ids,
     }
 
 
