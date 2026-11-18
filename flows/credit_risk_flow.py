@@ -1,7 +1,12 @@
-"""Metaflow pipeline: validate, split, sweep, select, calibrate, evaluate, package.
+"""Metaflow pipeline: validate, split, preprocess, sweep, select, calibrate, evaluate, package.
 
 Run with `uv run python flows/credit_risk_flow.py run`. Step logic lives in
 `credit_risk.pipeline`; this file only orchestrates.
+
+Frames stay raw through the flow. The `preprocess` step applies only the stateless
+transformations (placeholder cleaning, engineered ratios) to report on and check them.
+Stateful preprocessing (encoders, bins) is fitted per fold inside `train`, so no fold sees
+statistics from its own validation rows.
 """
 
 import logging
@@ -14,7 +19,13 @@ from metaflow import FlowSpec, Parameter, card, current, retry, step
 from metaflow.cards import Markdown, Table
 
 from credit_risk import pipeline
-from credit_risk.config import DEFAULT_PROTOCOL, FEATURE_SETS, TARGET, SplitProtocol
+from credit_risk.config import (
+    DEFAULT_PROTOCOL,
+    FEATURE_SETS,
+    SPECIAL_VALUES,
+    TARGET,
+    SplitProtocol,
+)
 from credit_risk.models import CALIBRATION_METHODS
 
 logger = logging.getLogger(__name__)
@@ -88,6 +99,21 @@ class CreditRiskFlow(FlowSpec):
         self.split_counts = {k: len(v) for k, v in self.frames.items()}
         self.candidates = pipeline.load_sweep(Path(self.sweep))
         logger.info("data sha256 %s; splits %s", self.data_hash, self.split_counts)
+        self.next(self.preprocess)
+
+    @step
+    def preprocess(self) -> None:
+        """Report on and check the stateless feature transformations, then fan out the sweep."""
+        _configure_logging()
+        self.feature_report = pipeline.feature_report(self.frames)
+        for name, info in self.feature_report["splits"].items():
+            logger.info(
+                "%s: %d rows, placeholders %s, max missing rate %.4f",
+                name,
+                info["rows"],
+                info["placeholder_counts"],
+                max(info["missing_rate"].values()),
+            )
         self.next(self.train, foreach="candidates")
 
     @retry(times=1)
@@ -190,6 +216,15 @@ class CreditRiskFlow(FlowSpec):
         current.card.append(Markdown(self.explanation))
         if not self.score_test:
             current.card.append(Markdown("The test window was not scored in this run."))
+        report_rows = [
+            [
+                name,
+                str(info["rows"]),
+                *[str(info["placeholder_counts"][c]) for c in SPECIAL_VALUES],
+                *[f"{info['missing_rate'][c]:.4f}" for c in SPECIAL_VALUES],
+            ]
+            for name, info in self.feature_report["splits"].items()
+        ]
         current.card.append(
             Table(
                 rows,
@@ -204,6 +239,18 @@ class CreditRiskFlow(FlowSpec):
                     "observed",
                     "approval",
                     "bad rate approved",
+                ],
+            )
+        )
+        current.card.append(Markdown("### Placeholders and missing rates"))
+        current.card.append(
+            Table(
+                report_rows,
+                headers=[
+                    "split",
+                    "rows",
+                    *[f"{c} placeholders" for c in SPECIAL_VALUES],
+                    *[f"{c} missing" for c in SPECIAL_VALUES],
                 ],
             )
         )

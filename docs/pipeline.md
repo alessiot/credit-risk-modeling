@@ -6,6 +6,10 @@ How to run the Metaflow pipeline, compare runs and score new applications, and w
 
 ```
 start      load and validate the CSV (schema, value domains, uniqueness), build out-of-time splits
+preprocess feature engineering: apply the stateless transformations (placeholders to NaN plus
+           missing flags, loan-to-income and payment-to-income ratios) to every split, check
+           they are deterministic, and store a per-split feature report (placeholder counts,
+           missing rates, engineered-feature ranges)
 train      foreach candidate in the sweep: expanding-window CV on the training window,
            fit, score validation
 select     join: champion by the one-standard-error rule, challenger = best other candidate,
@@ -86,3 +90,7 @@ pd_scores = score_applications(
 - **Warnings are not suppressed.** The test suite treats warnings as errors.
 - **One gradient-boosting library.** LightGBM only; XGBoost and CatBoost are not dependencies.
 - **No resampling.** `imbalanced-learn` was not needed.
+- **Feature engineering is a step, but fitting stays in the model.** The `preprocess` step
+  applies and reports the stateless transformations. The stateful parts (category encoders,
+  bins) are fitted inside each CV fold by the model pipeline in `train`, so they never see
+  validation rows, and the saved artifact takes raw application columns.

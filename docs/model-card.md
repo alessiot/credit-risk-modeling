@@ -247,3 +247,6 @@ drop).
   out); what `sample_weight` means (label-derived, never a feature); whether declined
   applications exist (none, no reject inference); real LGD and margin (60% and 10%,
   illustrative).
+- The brief lists `scripts/generate_enhanced_data.py`, which was not included. It would settle
+  the snapshot date, the meaning of `sample_weight` and whether the 2023-24 fall in default rates
+  is by design; it has been requested.

@@ -18,6 +18,7 @@ from credit_risk.config import (
     FEATURE_SETS,
     NUMERIC_INPUTS,
     SELECTABLE_FEATURE_SETS,
+    SPECIAL_VALUES,
     TARGET,
     TIME,
     WEIGHT,
@@ -35,7 +36,7 @@ from credit_risk.evaluation import (
     paired_bootstrap_diff,
     psi,
 )
-from credit_risk.features import clean_special_values
+from credit_risk.features import add_engineered_features, clean_special_values, output_columns
 from credit_risk.models import (
     CALIBRATION_METHODS,
     FAMILIES,
@@ -590,6 +591,75 @@ def stability_report(model: object, frames: Mapping[str, pd.DataFrame]) -> dict:
     )
     feature_psi = feature_psi.sort_values("psi", ascending=False).reset_index(drop=True)
     return {"score_psi": score_psi, "feature_psi": feature_psi}
+
+
+def _stateless_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Apply the stateless cleaning and feature engineering once.
+
+    Args:
+        df: Raw application frame.
+
+    Returns:
+        Frame with placeholders as NaN, missing flags and engineered ratios.
+    """
+    return add_engineered_features(clean_special_values(df))
+
+
+def feature_report(
+    frames: Mapping[str, pd.DataFrame], feature_set: str = "no_apr"
+) -> dict[str, Any]:
+    """Summarize and check the stateless feature transformations on each split.
+
+    Stateful preprocessing (encoders, bins) is not applied here; it is fitted per fold inside
+    the model pipeline.
+
+    Args:
+        frames: Raw frames by split name; the "train" frame is used for the determinism check.
+        feature_set: Key of FEATURE_SETS whose engineered features are summarized.
+
+    Returns:
+        Dict with `splits` (per split: rows, placeholder counts on the raw frame, missing rate
+        per numeric input after cleaning, min/median/max per engineered feature),
+        `feature_set` and `deterministic`.
+
+    Raises:
+        ValueError: If two applications to the training frame differ, or the input frame is
+            modified. Re-applying to the transformed output is not checked: the missing flags
+            are derived from the raw placeholder codes, which the first pass removes.
+    """
+    engineered = [
+        c for c in output_columns(feature_set) if c in ("loan_to_income", "payment_to_income")
+    ]
+    splits: dict[str, dict[str, Any]] = {}
+    for name, raw in frames.items():
+        transformed = _stateless_features(raw)
+        numeric = [c for c in NUMERIC_INPUTS if c in transformed.columns]
+        splits[name] = {
+            "rows": len(raw),
+            "placeholder_counts": {
+                c: int((raw[c] == v).sum()) for c, v in SPECIAL_VALUES.items() if c in raw.columns
+            },
+            "missing_rate": {c: float(transformed[c].isna().mean()) for c in numeric},
+            "engineered": {
+                c: {
+                    "min": float(transformed[c].min()),
+                    "median": float(transformed[c].median()),
+                    "max": float(transformed[c].max()),
+                }
+                for c in engineered
+                if c in transformed.columns
+            },
+        }
+    train = frames["train"]
+    snapshot = train.copy()
+    once = _stateless_features(train)
+    twice = _stateless_features(train)
+    try:
+        pd.testing.assert_frame_equal(once, twice)
+        pd.testing.assert_frame_equal(train, snapshot)
+    except AssertionError as exc:
+        raise ValueError(f"stateless features are not deterministic: {exc}") from exc
+    return {"splits": splits, "feature_set": feature_set, "deterministic": True}
 
 
 def _jsonable(obj: object) -> object:

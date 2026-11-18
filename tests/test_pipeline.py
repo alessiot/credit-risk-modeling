@@ -16,6 +16,7 @@ from credit_risk.pipeline import (
     _one_se_choice,
     calibrate_and_cutoff,
     evaluate_holdout,
+    feature_report,
     load_sweep,
     package_model,
     score_applications,
@@ -373,3 +374,70 @@ def test_package_round_trip(champion, synthetic_frames, tmp_path):
 def test_train_lgbm_candidate(synthetic_frames):
     res = train_candidate(Candidate("gb", "lgbm", "full", LGBM, weighted=True), synthetic_frames)
     assert pd.notna(res.cv_mean)
+
+
+def _report_frame() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "fico_score": [700, 99999, 650, 99999],
+            "income": [60000, -1, 0, 120000],
+            "debt_to_income": [0.2, 0.3, 0.4, 0.1],
+            "num_open_trades": [3, 4, 5, 6],
+            "utilization_rate": [0.1, 0.2, 0.3, 0.4],
+            "inquiries_last_6m": [1, 99, 2, 99],
+            "loan_amount": [12000, 6000, 3000, 24000],
+            "term": [36, 36, 60, 60],
+            "apr": [0.0, 10.0, 12.0, 8.0],
+            "employment_length": [1, 2, 3, 4],
+            "channel": ["Direct"] * 4,
+            "product_type": ["Auto"] * 4,
+            "state": ["CA"] * 4,
+        }
+    )
+
+
+def test_feature_report_counts_and_ranges():
+    frame = _report_frame()
+    report = feature_report({"train": frame, "val": frame.iloc[:2]})
+    assert report["deterministic"] is True
+    assert report["feature_set"] == "no_apr"
+    train = report["splits"]["train"]
+    assert train["rows"] == 4
+    assert train["placeholder_counts"] == {
+        "fico_score": 2,
+        "income": 1,
+        "inquiries_last_6m": 2,
+    }
+    assert train["missing_rate"]["fico_score"] == 0.5
+    assert train["missing_rate"]["income"] == 0.25
+    assert set(train["engineered"]) == {"loan_to_income"}
+    lti = train["engineered"]["loan_to_income"]
+    assert lti["min"] == pytest.approx(0.2)
+    assert lti["max"] == pytest.approx(0.2)
+    assert report["splits"]["val"]["rows"] == 2
+
+
+def test_feature_report_full_set_has_payment_ratio():
+    report = feature_report({"train": _report_frame()}, feature_set="full")
+    assert set(report["splits"]["train"]["engineered"]) == {"loan_to_income", "payment_to_income"}
+
+
+def test_feature_report_does_not_modify_input():
+    frame = _report_frame()
+    expected = frame.copy()
+    feature_report({"train": frame})
+    pd.testing.assert_frame_equal(frame, expected)
+
+
+def test_feature_report_raises_on_non_deterministic_transform(monkeypatch):
+    calls = []
+
+    def drifting(df: pd.DataFrame) -> pd.DataFrame:
+        calls.append(1)
+        out = df.copy()
+        out["loan_to_income"] = float(len(calls))
+        return out
+
+    monkeypatch.setattr("credit_risk.pipeline.add_engineered_features", drifting)
+    with pytest.raises(ValueError, match="not deterministic"):
+        feature_report({"train": _report_frame()})

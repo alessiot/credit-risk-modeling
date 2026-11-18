@@ -63,6 +63,40 @@ def test_flow_end_to_end_does_not_score_test_by_default(tmp_path):
 
 
 @pytest.mark.slow
+def test_flow_has_preprocess_step_with_feature_report(tmp_path):
+    proc, _ = _run_flow(tmp_path)
+    assert proc.returncode == 0, proc.stderr[-3000:]
+    code = """
+import json
+from metaflow import Flow, namespace
+
+namespace(None)
+run = Flow("CreditRiskFlow").latest_run
+report = run["preprocess"].task.data.feature_report
+print(json.dumps({"steps": sorted(s.id for s in run.steps()), "splits": sorted(report["splits"])}))
+"""
+    out = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=tmp_path,
+        env=os.environ
+        | {
+            "METAFLOW_HOME": str(tmp_path / "mf_home"),
+            "METAFLOW_DATASTORE_SYSROOT_LOCAL": str(tmp_path),
+            "USERNAME": "pytest",
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert out.returncode == 0, out.stderr[-2000:]
+    info = json.loads(out.stdout.strip().splitlines()[-1])
+    assert info["steps"] == sorted(
+        ["start", "preprocess", "train", "select", "calibrate", "evaluate", "end"]
+    )
+    assert info["splits"] == ["gap", "test", "train", "val"]
+
+
+@pytest.mark.slow
 def test_flow_scores_test_when_asked(tmp_path):
     meta = _metadata(*_run_flow(tmp_path, "--score_test", "true", "--calibration", "logit_platt"))
     assert meta["metrics"]["test"]["name"] == "test"
