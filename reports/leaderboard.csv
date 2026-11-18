@@ -7,3 +7,5 @@ enhanced-v1,oot-v1,expanding-quarter-4,roc_auc,max,R04-logreg-no-apr,logreg,no_a
 enhanced-v1,oot-v1,expanding-quarter-4,roc_auc,max,R05-lgbm-no-apr,lgbm,no_apr,no,yes,0.70131,0.00615,0.71947,1,none,yes,0.68003,../runs/R05-lgbm-no-apr/manifest.md
 enhanced-v1,oot-v1,expanding-quarter-4,roc_auc,max,R06-lgbm-weighted,lgbm,full,yes,yes,0.70417,0.00635,0.71737,1,none,no,,../runs/R06-lgbm-weighted/manifest.md
 enhanced-v1,oot-v1,expanding-quarter-4,roc_auc,max,R07-lgbm-leaky,lgbm,leaky,no,no,1.0,0.0,1.0,1,none,no,,../runs/R07-lgbm-leaky/manifest.md
+enhanced-v1,oot-v1,expanding-quarter-4,roc_auc,max,R08-lgbm-sensitivity,lgbm,full,no,no,0.70786,0.00655,0.71947,276,plateau,no,,../runs/R08-lgbm-sensitivity/manifest.md
+enhanced-v1,oot-v1,expanding-quarter-4,roc_auc,max,R09-lgbm-no-apr-sensitivity,lgbm,no_apr,no,no,0.7087,0.00673,0.7185,378,plateau,no,,../runs/R09-lgbm-no-apr-sensitivity/manifest.md

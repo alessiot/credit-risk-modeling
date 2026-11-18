@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The definition of done. Keep it fast (< 2 min) or split a slow suite behind `--full`.
+# Format check, lint and tests. `--full` also runs the slow end-to-end pipeline test.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 uv run ruff format --check .

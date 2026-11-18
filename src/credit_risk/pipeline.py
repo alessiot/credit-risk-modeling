@@ -491,7 +491,7 @@ def package_model(
     metadata = {
         "model_name": candidate.name,
         "candidate": asdict(candidate),
-        "input_columns": list(APPLICATION_COLUMNS),
+        "input_columns": list(FEATURE_SETS[candidate.feature_set]),
         "split_protocol": asdict(protocol),
         "data_sha256": data_hash,
         "threshold": float(threshold),

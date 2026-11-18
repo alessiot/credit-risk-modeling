@@ -50,3 +50,11 @@ APR adds no rank-ordering power to LightGBM.
 - Validation AUC: 0.7195
 - Parameters: `{"n_estimators": 64, "learning_rate": 0.01111149590259364, "num_leaves": 18, "min_child_samples": 138, "reg_lambda": 0.0013435846437317542, "colsample_bytree": 0.7901712827020574, "subsample": 0.7497307409391766, "subsample_freq": 1}`
 - Leaderboard row: R05-lgbm-no-apr
+
+## Deviations
+
+- 2026-11-18: this run reused R03's parameters, which were tuned with APR. Its 0.0061 deficit
+  against R03 (lower on 4/4 folds) reflects that, not APR. Tuned directly (R09-lgbm-no-apr-
+  sensitivity), the no-APR feature set reaches 0.7087 against 0.7079 with APR (R08), paired
+  fold difference -0.0008 (se 0.0017). The hypothesis that APR adds no rank-ordering power holds
+  once both feature sets are tuned.

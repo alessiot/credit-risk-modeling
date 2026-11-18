@@ -1,0 +1,89 @@
+{
+  "run_id": "R09-lgbm-no-apr-sensitivity",
+  "family": "lgbm",
+  "feature_set": "no_apr",
+  "weighted": false,
+  "selectable": false,
+  "params": {
+    "n_estimators": 88,
+    "learning_rate": 0.013465292790408426,
+    "num_leaves": 3,
+    "min_child_samples": 386,
+    "reg_lambda": 0.015409783782431912,
+    "colsample_bytree": 0.6265041407700579,
+    "subsample": 0.7351980582395267,
+    "subsample_freq": 1
+  },
+  "fold_scores": [
+    0.7072779862414009,
+    0.6912628487518355,
+    0.712665762820886,
+    0.7235749765997277
+  ],
+  "cv_mean": 0.7086953936034626,
+  "cv_se": 0.00672723621741884,
+  "val_metrics": {
+    "n": 6693.0,
+    "n_pos": 214.0,
+    "base_rate": 0.031973703869714626,
+    "mean_score": 0.031866750791487826,
+    "roc_auc": 0.7185046440476999,
+    "gini": 0.43700928809539974,
+    "ks": 0.3274526038834307,
+    "pr_auc": 0.07392323609212828,
+    "brier": 0.030549903453134734,
+    "log_loss": 0.1353561137311885
+  },
+  "trials": 378,
+  "stop_reason": "plateau",
+  "per_seed": [
+    {
+      "seed": 0,
+      "best": 0.7086953936034626,
+      "trials": 164,
+      "stop_reason": "plateau",
+      "params": {
+        "n_estimators": 88,
+        "learning_rate": 0.013465292790408426,
+        "num_leaves": 3,
+        "min_child_samples": 386,
+        "reg_lambda": 0.015409783782431912,
+        "colsample_bytree": 0.6265041407700579,
+        "subsample": 0.7351980582395267,
+        "subsample_freq": 1
+      }
+    },
+    {
+      "seed": 1,
+      "best": 0.7070101952213435,
+      "trials": 133,
+      "stop_reason": "plateau",
+      "params": {
+        "n_estimators": 218,
+        "learning_rate": 0.0131737927487227,
+        "num_leaves": 3,
+        "min_child_samples": 219,
+        "reg_lambda": 0.0010956065706982064,
+        "colsample_bytree": 0.9001738549413933,
+        "subsample": 0.5602245639047954,
+        "subsample_freq": 1
+      }
+    },
+    {
+      "seed": 2,
+      "best": 0.7075823937526362,
+      "trials": 81,
+      "stop_reason": "plateau",
+      "params": {
+        "n_estimators": 191,
+        "learning_rate": 0.016280182207208824,
+        "num_leaves": 4,
+        "min_child_samples": 433,
+        "reg_lambda": 1.1900423579170563,
+        "colsample_bytree": 0.7332040652665938,
+        "subsample": 0.9850634116883819,
+        "subsample_freq": 1
+      }
+    }
+  ]
+}

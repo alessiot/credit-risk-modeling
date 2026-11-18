@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from credit_risk.config import APPLICATION_COLUMNS, DEFAULT_PROTOCOL
+from credit_risk.config import APPLICATION_COLUMNS, DEFAULT_PROTOCOL, FEATURE_SETS
 from credit_risk.data import load_raw
 from credit_risk.models import positive_scores
 from credit_risk.pipeline import (
@@ -158,7 +158,8 @@ def test_package_round_trip(champion, synthetic_frames, tmp_path):
         extra={"run_id": "1"},
     )
     meta = json.loads((out / "metadata.json").read_text())
-    assert meta["input_columns"] == list(APPLICATION_COLUMNS) and meta["threshold"] == 0.1428
+    assert meta["input_columns"] == list(FEATURE_SETS[champion.candidate.feature_set])
+    assert meta["threshold"] == 0.1428
     assert meta["split_protocol"]["split_id"] == "oot-v1"
     df = synthetic_frames["test"]
     pds = score_applications(out, df)

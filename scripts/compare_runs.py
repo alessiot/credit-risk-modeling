@@ -1,7 +1,7 @@
 """Compare recent successful CreditRiskFlow runs via the Metaflow Client API.
 
 Usage:
-    uv run python scripts/compare_runs.py [--last 5]
+    uv run python scripts/compare_runs.py [--last 5] [--with-test]
     uv run python scripts/compare_runs.py --run-id 12
 """
 
@@ -30,19 +30,23 @@ def short_path(path: str) -> str:
     return str(p.relative_to(ROOT)) if p.is_relative_to(ROOT) else path
 
 
-def summarize(run: Run) -> dict:
+def summarize(run: Run, with_test: bool = False) -> dict:
     """Extract the comparison fields of one run.
+
+    Test-window metrics are left out unless asked for, so that variants are compared on
+    validation and gap-year results rather than on the test window.
 
     Args:
         run: A successful CreditRiskFlow run.
+        with_test: Also include test AUC with its interval and test ECE.
 
     Returns:
-        Dict with run id, created time, parameters, champion, CV AUC, test AUC with CI,
-        test ECE and artifact path.
+        Dict with run id, created time, parameters, champion, CV, validation and gap-year
+        metrics, optionally test metrics, and the artifact path.
     """
     d = run.data
-    test = d.test_eval
-    return {
+    gap = d.gap_eval
+    row = {
         "run_id": run.id,
         "created": run.created_at.strftime("%Y-%m-%d %H:%M"),
         "sweep": short_path(d.sweep),
@@ -50,11 +54,17 @@ def summarize(run: Run) -> dict:
         "calibration": d.calibration,
         "champion": d.champion.candidate.name,
         "cv_auc": round(d.champion.cv_mean, 4),
-        "test_auc": round(test["metrics"]["roc_auc"], 4),
-        "test_auc_ci": f"[{test['auc_ci'][0]:.4f}, {test['auc_ci'][1]:.4f}]",
-        "test_ece": round(test["ece"], 4),
-        "artifact": short_path(d.artifact_path),
+        "val_auc": round(d.champion.val_auc, 4),
+        "gap_auc": round(gap["metrics"]["roc_auc"], 4),
+        "gap_ece": round(gap["ece"], 4),
     }
+    if with_test:
+        test = d.test_eval
+        row["test_auc"] = round(test["metrics"]["roc_auc"], 4)
+        row["test_auc_ci"] = f"[{test['auc_ci'][0]:.4f}, {test['auc_ci'][1]:.4f}]"
+        row["test_ece"] = round(test["ece"], 4)
+    row["artifact"] = short_path(d.artifact_path)
+    return row
 
 
 def main() -> None:
@@ -62,6 +72,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--last", type=int, default=5, help="number of successful runs")
     parser.add_argument("--run-id", help="show the per-vintage test table of this run")
+    parser.add_argument(
+        "--with-test", action="store_true", help="add test-window metrics to the run table"
+    )
     args = parser.parse_args()
     namespace(None)
     flow = Flow(FLOW)
@@ -69,7 +82,7 @@ def main() -> None:
         table = flow[args.run_id].data.test_eval["per_vintage"]
     else:
         runs = islice((r for r in flow.runs() if r.successful), args.last)
-        table = pd.DataFrame([summarize(r) for r in runs])
+        table = pd.DataFrame([summarize(r, args.with_test) for r in runs])
     sys.stdout.write(table.to_string(index=False) + "\n")
 
 

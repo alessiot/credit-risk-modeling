@@ -4,12 +4,13 @@ A probability-of-default (PD) model scored at the application decision, built on
 from vintages 2021-01 to 2024-09. It uses an out-of-time evaluation, has a documented selection
 rule, and ships as a Metaflow pipeline that reproduces the analysis and versions the model.
 
-- **Main deliverable:** [`notebooks/modeling.ipynb`](notebooks/modeling.ipynb), executed with
-  all outputs saved. It ends with the summary, limitations and recommendations.
-- **Decision record:** [`docs/model-card.md`](docs/model-card.md). Every data, split,
-  selection, calibration and monitoring decision, with its numbers.
-- **Experiment log:** [`reports/leaderboard.csv`](reports/leaderboard.csv). Every run, each
-  with a manifest written before it ran, under [`runs/`](runs/).
+- [`notebooks/modeling.ipynb`](notebooks/modeling.ipynb) is the main deliverable, executed
+  with all outputs saved. It ends with the summary, limitations and recommendations.
+- [`docs/model-card.md`](docs/model-card.md) records every data, split, selection,
+  calibration and monitoring decision, with its numbers.
+- [`reports/leaderboard.csv`](reports/leaderboard.csv) lists every run. Each run has a
+  manifest under [`runs/`](runs/): the script writes it before the run starts and appends the
+  result.
 
 ## Results
 
@@ -18,27 +19,39 @@ rule, and ships as a Metaflow pipeline that reproduces the analysis and versions
 | Selected model | LightGBM with monotone constraints, 12 application features (APR excluded) |
 | Test window | 2024-01 to 2024-09, 9,984 loans, 227 defaults, scored once |
 | Test ROC AUC | 0.680 (95% CI 0.651-0.708). Gini 0.36, KS 0.31 |
-| Validation / 2023 gap year AUC | 0.720 / 0.712 |
-| FICO-only baseline (validation) | 0.648 |
-| Calibration on test | Mean PD 3.21% vs 2.27% observed. Default rates fell in 2023-24 at a constant borrower mix, so the model needs recalibration before use |
+| Validation AUC, selected model vs FICO only | 0.720 vs 0.648 |
+| 2023 gap-year AUC | 0.712 |
+| Calibration on test | Mean PD 3.21% vs 2.27% observed. Top decile 9.1% vs 3.9%. Needs recalibration before use |
 
 What drove the result:
 
-1. **Four columns leak the outcome.** `days_past_due_current`, `total_payments_to_date` and
-   `sample_weight` separate defaults perfectly. `months_on_book` is recorded after origination
-   and matches no snapshot date. With them, CV AUC is 1.000. All four are excluded, and
-   `sample_weight` is tested only as a training weight. That made AUC slightly worse.
+1. **Four columns are not available at the decision.**
+   - `days_past_due_current` and `sample_weight` separate defaults perfectly.
+   - `total_payments_to_date` divided by the loan amount does too.
+   - `months_on_book` is recorded after origination.
+   - With them, CV AUC is 1.000. All four are excluded, and `sample_weight` is tested only as a
+     training weight. That made AUC slightly worse.
 2. **Placeholder codes are missing values, and missingness predicts default.** These are
    FICO 99999, income -1 and inquiries 99. Each becomes NaN plus a missing flag.
 3. **Out-of-time validation with the production gap.** Tuning runs on 2021-01 to 2022-06 with
    expanding quarterly folds. Calibration and the cutoff use 2022-H2. 2023 is held out as the
    12-month label gap, and 2024 is the test window, used once.
-4. **Selection by a rule written before any model ran:** the simplest model within one CV
-   standard error of the best.
-   - LightGBM beats the binned logistic regression by 0.018-0.026 CV AUC, consistently across
-     folds.
-   - Dropping APR costs 0.006 CV AUC, inside one standard error. APR may come out of the
-     pricing decision, so the rule's choice of the APR-free model is also the safer one.
+4. **Selection follows a rule written before any model ran.** It picks the simplest model
+   within one CV standard error of the best.
+   - LightGBM beats the binned logistic regression by 0.018-0.026 CV AUC, on every fold.
+   - The rule chose the APR-free LightGBM by a thin margin (0.0009 above the floor), and that
+     margin rested on a search whose stopping rule was too coarse.
+   - Converged searches, run after the test pass on CV only, confirm the choice. Without APR,
+     CV AUC is 0.7087; with APR, 0.7079 (paired difference -0.0008, se 0.0017). So APR adds
+     nothing.
+   - The same searches show the frozen configuration is about one standard error under-tuned.
+     The better configuration (R09) is the recommended next version. Swapping it in now would
+     need a new test window.
+
+Default rates fell from 3.2% (2021-22) to 2.3% (2024) while input distributions stayed stable,
+mostly below FICO 650. The cause is not established. As a result the model over-predicts 2024,
+and its calibrator stretches the top of the scale. Limitations and recommendations close the
+notebook.
 
 ## Repository layout
 
@@ -81,6 +94,7 @@ scripts/check.sh                                   # ruff format check, ruff lin
 uv run pytest -m slow                              # end-to-end pipeline test (about 20 s)
 uv run python scripts/run_experiments.py           # all registered runs, rewrites the leaderboard
 uv run python scripts/run_experiments.py --convergence --runs R02 R03
+uv run python scripts/run_experiments.py --sensitivity    # converged LightGBM searches (R08, R09)
 uv run jupyter nbconvert --to notebook --execute --inplace notebooks/modeling.ipynb
 ```
 
@@ -118,7 +132,7 @@ training ends).
 
 **Parameter sweeps.** `flows/sweep.json` lists the candidates (family, feature set,
 hyperparameters, training weight). The `train` step fans out over them in parallel, and
-`select` applies the selection rule. The default sweep holds the five tuned configurations from
+`select` applies the selection rule. The default sweep holds the five selectable configurations from
 the leaderboard.
 
 **Champion and challenger.** Every run records the champion and the runner-up and compares
@@ -126,30 +140,36 @@ them with a paired bootstrap on validation AUC. To compare pipeline variants (ca
 method, training window, sweep), run the flow with different parameters and compare runs:
 
 ```bash
-uv run python scripts/compare_runs.py --last 5
+uv run python scripts/compare_runs.py --last 5             # validation and gap-year metrics
+uv run python scripts/compare_runs.py --last 5 --with-test # adds test metrics
 uv run python scripts/compare_runs.py --run-id <run id>    # per-vintage test table
 ```
 
-Example with the default run and an isotonic-calibration run:
+Example with the default run and an isotonic-calibration run (the default table leaves out test
+metrics, so variants are compared on validation and the 2023 gap year):
 
 ```
-          run_id          created            sweep  train_end calibration    champion  cv_auc  test_auc      test_auc_ci  test_ece                        artifact
-1795009036562874 2026-11-18 08:37 flows/sweep.json     202206    isotonic lgbm_no_apr  0.7013    0.6764 [0.6476, 0.7043]    0.0113 outputs/models/1795009036562874
-1795009013944738 2026-11-18 08:36 flows/sweep.json     202206     sigmoid lgbm_no_apr  0.7013    0.6800 [0.6507, 0.7078]    0.0119 outputs/models/1795009013944738
+          run_id          created            sweep  train_end calibration    champion  cv_auc  val_auc  gap_auc  gap_ece                        artifact
+1795009036562874 2026-11-18 08:37 flows/sweep.json     202206    isotonic lgbm_no_apr  0.7013   0.7195   0.7109   0.0083 outputs/models/1795009036562874
+1795009013944738 2026-11-18 08:36 flows/sweep.json     202206     sigmoid lgbm_no_apr  0.7013   0.7195   0.7124   0.0088 outputs/models/1795009013944738
 ```
 
-Run comparison shows what each variant does. The choice between variants still belongs on
-validation data: picking a calibration method by its test score would turn the test window into
-a tuning set.
+`--with-test` adds test AUC and ECE. Use it to report a chosen variant, not to choose one:
+picking a variant by its test score turns the test window into a tuning set. The isotonic run
+above was scored on the test window as part of this demonstration. It informed no decision.
 
 Each artifact folder holds `model.joblib` (the calibrated pipeline from raw application
 columns to PD) and `metadata.json`. The metadata has the candidate, parameters, split protocol,
-data SHA-256, cutoff, metrics, library versions, and a hash of the model file that is checked
-on load. To score new applications:
+data SHA-256, cutoff, metrics, library versions, the input columns the model needs (12; APR is
+not one), and a hash of the model file that is checked on load. Scoring one application takes
+about 2 ms. To score new applications:
 
 ```python
 from credit_risk.pipeline import score_applications
-pd_scores = score_applications("models/pd-lgbm-no-apr-v1", applications_df)  # checks the input schema
+
+pd_scores = score_applications(
+    "models/pd-lgbm-no-apr-v1", applications_df
+)  # checks the input schema
 ```
 
 ## Departures from the brief and the template
@@ -159,8 +179,7 @@ pd_scores = score_applications("models/pd-lgbm-no-apr-v1", applications_df)  # c
   `DataValidationError`, `ValueError`) with every failure listed. Metaflow's `@retry` covers
   transient failures in the training step only.
 - **Warnings are not suppressed.** The test suite treats warnings as errors.
-- **One gradient-boosting library.** LightGBM is used, not LightGBM plus XGBoost plus CatBoost.
-  The unused libraries from the original requirements were dropped.
+- **One gradient-boosting library.** LightGBM only; XGBoost and CatBoost are not dependencies.
 - **No resampling.** `imbalanced-learn` was not needed.
 
 ## Open questions for the data owners

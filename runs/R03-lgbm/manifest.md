@@ -58,3 +58,11 @@ Monotone LightGBM captures threshold effects and interactions beyond R02.
   - seed 1: best 0.7038 after 61 trials (plateau), log trials_seed1.csv
   - seed 2: best 0.7074 after 61 trials (plateau), log trials_seed2.csv
 - Status: converged (recorded best 0.7074)
+
+## Deviations
+
+- 2026-11-18: the convergence status above is withdrawn. The plateau rule used a minimum delta
+  of 0.0131 (cv_se of the default configuration), about twice the selection margin it informs,
+  so improvements below it did not count and the reruns became fixed 61-trial budgets. Status:
+  unconverged. R08-lgbm-sensitivity repeats the search with a minimum delta of 0.001 and three
+  seeds (best 0.7079).

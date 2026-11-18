@@ -229,6 +229,36 @@ RUNS: tuple[RunSpec, ...] = (
 )
 
 
+SENSITIVITY_MIN_DELTA = 0.001
+SENSITIVITY_WINDOW = 60
+SENSITIVITY_CAP = 400
+SENSITIVITY_SEEDS = (0, 1, 2)
+SENSITIVITY_RUNS: tuple[RunSpec, ...] = (
+    RunSpec(
+        "R08-lgbm-sensitivity",
+        "lgbm",
+        "full",
+        "R03's search stopped on a minimum delta (0.013) coarser than the selection margin; a "
+        "search with a 0.001 delta shows where LightGBM with APR converges.",
+        "Best CV AUC stable across three seeds within 0.001.",
+        "n/a (sensitivity check, run after the test pass, never selectable).",
+        cap=SENSITIVITY_CAP,
+        selectable=False,
+    ),
+    RunSpec(
+        "R09-lgbm-no-apr-sensitivity",
+        "lgbm",
+        "no_apr",
+        "R05 reused R03's parameters; tuning it directly shows whether the selection holds "
+        "when both feature sets are searched to convergence.",
+        "Best CV AUC stable across three seeds within 0.001.",
+        "n/a (sensitivity check, run after the test pass, never selectable).",
+        cap=SENSITIVITY_CAP,
+        selectable=False,
+    ),
+)
+
+
 def write_text(path: Path, text: str) -> None:
     """Write text, creating parent folders.
 
@@ -505,6 +535,108 @@ def convergence_check(
     return {"min_delta": min_delta, "reruns": reruns, "status": status}
 
 
+def sensitivity_search(
+    spec: RunSpec,
+    train: pd.DataFrame,
+    val: pd.DataFrame,
+    folds: list[tuple[np.ndarray, np.ndarray]],
+    hashes: tuple[str, str],
+) -> dict[str, Any]:
+    """Search one family and feature set with a fine stopping rule over several seeds.
+
+    The minimum delta (0.001) is finer than the selection margins it informs. The best
+    configuration over all seeds is refit and scored on validation. The test window is not read.
+
+    Args:
+        spec: Sensitivity run specification.
+        train: Training window.
+        val: Validation window.
+        folds: Expanding-window folds over `train`.
+        hashes: (data hash, lock hash).
+
+    Returns:
+        Result dictionary, also written to runs/<run_id>/result.json.
+    """
+    run_dir = RUNS_DIR / spec.run_id
+    y = train[TARGET]
+    delta_text = (
+        f"{SENSITIVITY_MIN_DELTA} (fixed, finer than the selection margin); window "
+        f"{SENSITIVITY_WINDOW}; seeds {list(SENSITIVITY_SEEDS)}"
+    )
+    write_text(run_dir / "manifest.md", manifest_head(spec, *hashes, delta_text))
+
+    def cv(params: dict[str, Any]) -> CVResult:
+        return cross_validate(spec.family, spec.feature_set, params, train, y, folds, seed=SEED)
+
+    space = SPACES[spec.family]
+    per_seed = []
+    for seed in SENSITIVITY_SEEDS:
+        log_path = run_dir / f"trials_seed{seed}.csv"
+        log_path.unlink(missing_ok=True)
+        tuning = tune(
+            lambda trial: cv(space(trial)).cv_mean,
+            "maximize",
+            min_delta=SENSITIVITY_MIN_DELTA,
+            window=SENSITIVITY_WINDOW,
+            cap=spec.cap,
+            seed=seed,
+            log_path=log_path,
+        )
+        params = {**tuning.best_params, "subsample_freq": 1}
+        per_seed.append(
+            {
+                "seed": seed,
+                "best": tuning.best_value,
+                "trials": tuning.n_trials,
+                "stop_reason": tuning.stop_reason,
+                "params": params,
+            }
+        )
+        logger.info(
+            "%s seed %d: best %.4f after %d trials (%s)",
+            spec.run_id,
+            seed,
+            tuning.best_value,
+            tuning.n_trials,
+            tuning.stop_reason,
+        )
+    best = max(per_seed, key=lambda r: r["best"])
+    final_cv = cv(best["params"])
+    model = fit_model(spec.family, spec.feature_set, best["params"], train, y, seed=SEED)
+    val_metrics = binary_metrics(val[TARGET], positive_scores(model, val))
+    stops = {r["stop_reason"] for r in per_seed}
+    result = {
+        "run_id": spec.run_id,
+        "family": spec.family,
+        "feature_set": spec.feature_set,
+        "weighted": False,
+        "selectable": False,
+        "params": best["params"],
+        "fold_scores": final_cv.fold_scores,
+        "cv_mean": final_cv.cv_mean,
+        "cv_se": final_cv.cv_se,
+        "val_metrics": val_metrics,
+        "trials": sum(r["trials"] for r in per_seed),
+        "stop_reason": "cap" if "cap" in stops else "plateau",
+        "per_seed": per_seed,
+    }
+    write_text(run_dir / "result.json", json.dumps(result, indent=2))
+    lines = "".join(
+        f"  - seed {r['seed']}: best {r['best']:.4f} after {r['trials']} trials "
+        f"({r['stop_reason']})\n"
+        for r in per_seed
+    )
+    spread = max(r["best"] for r in per_seed) - min(r["best"] for r in per_seed)
+    with (run_dir / "manifest.md").open("a", encoding="utf-8") as fh:
+        fh.write(
+            f"\n## Result\n\n{lines}- Best over seeds: {final_cv.cv_mean:.4f} "
+            f"(cv_se {final_cv.cv_se:.4f}); spread across seeds {spread:.4f}\n"
+            f"- Validation AUC: {val_metrics['roc_auc']:.4f}\n"
+            f"- Parameters: `{json.dumps(best['params'])}`\n"
+        )
+    return result
+
+
 def write_leaderboard(results: list[dict[str, Any]]) -> None:
     """Write reports/leaderboard.csv with one row per run (none selected yet).
 
@@ -548,6 +680,11 @@ def main() -> None:
     parser.add_argument("--smoke", action="store_true", help="3 trials per search, no outputs")
     parser.add_argument("--verbose", action="store_true", help="DEBUG logging")
     parser.add_argument(
+        "--sensitivity",
+        action="store_true",
+        help="post-test sensitivity searches (R08, R09) with a fine stopping rule",
+    )
+    parser.add_argument(
         "--convergence",
         action="store_true",
         help="rerun the tuned searches with two more seeds, double window and cap",
@@ -568,6 +705,11 @@ def main() -> None:
     for path in RUNS_DIR.glob("*/result.json"):
         prior = json.loads(path.read_text(encoding="utf-8"))
         done[prior["run_id"]] = prior
+    if args.sensitivity:
+        for spec in SENSITIVITY_RUNS:
+            done[spec.run_id] = sensitivity_search(spec, train, val, folds, hashes)
+        write_leaderboard([done[s.run_id] for s in (*RUNS, *SENSITIVITY_RUNS) if s.run_id in done])
+        return
     if args.convergence:
         for spec in selected:
             if spec.cap:
@@ -582,7 +724,7 @@ def main() -> None:
             sys.exit(f"{spec.run_id} needs {spec.params_from} to have run first")
         done[spec.run_id] = run_one(spec, train, val, folds, done, hashes, args.smoke)
     if not args.smoke:
-        write_leaderboard([done[s.run_id] for s in RUNS if s.run_id in done])
+        write_leaderboard([done[s.run_id] for s in (*RUNS, *SENSITIVITY_RUNS) if s.run_id in done])
 
 
 if __name__ == "__main__":

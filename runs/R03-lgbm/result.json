@@ -52,6 +52,7 @@
         "stop_reason": "plateau"
       }
     ],
-    "status": "converged"
+    "status": "unconverged",
+    "note": "plateau delta 0.0131 is coarser than the selection margin; a search with delta 0.001 (R08-lgbm-sensitivity) reaches 0.7079"
   }
 }

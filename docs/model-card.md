@@ -34,9 +34,9 @@
 | `fico_score` = 99999 (missing) | 2,500 | NaN plus missing flag (default rate 4.16% when missing vs 2.78%) |
 | `income` = -1 (missing) | 1,500 | NaN plus missing flag (5.93% vs 2.76%) |
 | `inquiries_last_6m` = 99 (missing) | 1,000 | NaN plus missing flag (6.10% vs 2.79%) |
-| `days_past_due_current`, `total_payments_to_date` | all rows | Dropped: recorded after origination, each separates the label perfectly |
+| `days_past_due_current`, `total_payments_to_date` | all rows | Dropped: recorded after origination. DPD separates the label perfectly; payments to date / loan amount does too (the raw column has AUC 0.911) |
 | `sample_weight` | all rows | Not a feature: 0.80-1.20 for every non-default, 2.40-3.60 for every default. Tested only as a training weight (ablation) |
-| `months_on_book` | all rows | Dropped: post-origination, and uniform 0-24 in every vintage, so it matches no snapshot date |
+| `months_on_book` | all rows | Dropped: post-origination. Uniform 0-24 in every vintage, so it matches no snapshot date; no outcome signal (AUC 0.508) |
 | `employment_length` > `age` - 16 | 13,848 | Kept as reported, not capped (a cap would bring age into the model). No signal either way (2.87% vs 2.85%) |
 | `apr` clipped at 3.00 | 4,988 | Kept. `apr` shows no relation to FICO or default |
 | `debt_to_income` at the 0.01 floor | 33 | Kept |
@@ -57,15 +57,18 @@
 | `months_on_book`, `days_past_due_current`, `total_payments_to_date` | no | Post-origination |
 | `sample_weight` | no | Derived from the label |
 
-Label maturity: all 50,000 rows carry a label. If the data were cut at 2024-09, the 12-month
-window would still be open for vintages 2023-10 to 2024-09 (13,243 rows, 296 defaults). The data
-shows no censoring: within those vintages, loans under 12 months on book default at 2.44%
-(155/6,352), compared with 2.05% (141/6,891) for loans with 12 or more. The labels appear to be
-final, and this analysis treats them as final. The snapshot date is an open question.
+Label maturity: all 50,000 rows carry a label, and this analysis assumes the labels are final.
+If the data were cut at 2024-09, the 12-month window would still be open for vintages 2023-10
+to 2024-09 (13,243 rows, 296 defaults). Observed default rates in the test window do not fall
+toward the most recent vintages: 202409 has the highest rate, 3.31%. That is consistent with
+final labels but does not prove it. `months_on_book` cannot settle the question, because it
+matches no snapshot date. The snapshot date is an open question.
 
-The default rate falls from 3.21% (2021-22) to 2.27% (2024). The fall also shows up within
-risk strata (FICO < 640: 6.00% in 2021, 3.59% in 2024), so it is a level shift, not a change
-in borrower mix. Expect calibration drift in the out-of-time test.
+The default rate falls from 3.21% (2021-22) to 2.27% (2024), while input distributions stay
+stable (PSI below 0.002). The fall is concentrated below FICO 650 (5.85% in 2021, 3.79% in
+2024) and above 750 (1.96% to 1.47%). The 650-749 band does not fall. The cause is not
+established: economic conditions, servicing changes, or immature labels could each contribute.
+Expect calibration drift in the out-of-time test.
 
 ## Split protocol
 
@@ -104,11 +107,16 @@ in borrower mix. Expect calibration drift in the out-of-time test.
   2. The `leaky` feature set (ablation only) could be passed like any other. Fixed:
      `build_model` refuses it unless `allow_leaky=True`, the experiment script marks its row
      `selectable = no`, and selection only considers selectable rows.
-  3. The data audit's descriptive statistics used all 50,000 rows, including the test window.
-     Nothing was fit or tuned from them. The decisions (placeholder to NaN plus flag,
-     monotone directions, fixed category levels) come from domain knowledge, not from
-     test-set results.
-  4. The no-leakage regression test now permutes the target, weight, post-origination,
+  3. The data audit and the notebook's EDA used all 50,000 rows, including 2023-24 outcomes:
+     default rates by year and within FICO bands, placeholder rates, and decile steps. So the
+     2023-24 fall in default rates was known before the test pass. It set one expectation
+     (calibration drift) and no modeling choice. The data decisions (placeholder to NaN plus
+     flag, monotone directions, fixed category levels) follow domain practice. The test window
+     is therefore not pristine.
+  4. After the test pass, one pipeline run with isotonic calibration was scored on the test
+     window to demonstrate run comparison. It informed no decision. The default run comparison
+     now shows validation and gap-year metrics only.
+  5. The no-leakage regression test permutes the target, weight, post-origination,
      protected and time columns for every selectable feature set and checks that the
      features do not change.
 - The experiment script computes folds on the training window only and asserts that the
@@ -144,21 +152,28 @@ in borrower mix. Expect calibration drift in the out-of-time test.
   excluded by design. Among selectable runs, the best is R03-lgbm (0.7074, se 0.0070), and the
   selected R05 (0.7013) is within one standard error of it.
 - Selected run: R05-lgbm-no-apr.
-- Convergence evidence: both tuned families stopped on the plateau rule (window 30, minimum
-  delta = cv_se of the default configuration: 0.0175 for logistic regression, 0.0131 for
-  LightGBM). Each was rerun with seeds 1 and 2 and double the window and cap:
-  - Logistic regression: 0.6812 on all three seeds.
-  - LightGBM: 0.7074, 0.7038 and 0.7074. The spread is 0.0036, below the best run's cv_se of
-    0.0070.
-
-  Both count as converged at the resolution of the selection rule. Curves are in
-  `runs/R02-logreg/trials*.csv` and `runs/R03-lgbm/trials*.csv`, plotted in notebook section 6.2.
+- Convergence evidence:
+  - Logistic regression (R02) is converged. Seeds 0, 1 and 2 (seeds 1 and 2 with double
+    window and cap) all reach 0.6812.
+  - LightGBM (R03) is unconverged.
+    - Its plateau rule used a minimum delta of 0.0131 (cv_se of the default configuration),
+      about twice the selection margin it informs.
+    - The recorded run found its best on its last trial, and the reruns stopped at exactly 61
+      trials (fixed budgets in effect).
+    - The R03 manifest records this as a dated deviation.
+  - **Sensitivity searches, after the test pass** (CV only, not selectable). Minimum delta
+    0.001, window 60, cap 400, seeds 0-2. All six stopped on the plateau, below the cap.
+    - R08 (with APR): seed bests 0.7074, 0.7038, 0.7079; best 0.7079 (cv_se 0.0065).
+    - R09 (no APR, tuned directly): 0.7087, 0.7070, 0.7076; best 0.7087 (cv_se 0.0067).
+    - Under the rule, the no-APR set has the best CV AUC, so the family choice holds.
+    - The frozen R05 configuration (0.7013) is about one cv_se below R09.
+- Curves: `runs/*/trials*.csv`, plotted in notebook sections 6.2 and 6.3.
 - Ablations, all with R03's parameters:
 
 | Ablation | CV AUC | Difference | Paired per-fold difference |
 |---|---|---|---|
 | Leakage columns added (R07) | 1.000 | +0.293 | - |
-| No APR / payment_to_income, LightGBM (R05) | 0.7013 | -0.0061 | lower on 4/4 folds, se 0.0021 |
+| No APR / payment_to_income, LightGBM (R05) | 0.7013 | -0.0061 | lower on 4/4 folds, se 0.0021; an artifact of reusing R03's parameters: tuned separately, R09 vs R08 is +0.0008 (paired se 0.0017) |
 | No APR, logistic (R04) | 0.6834 | +0.0022 vs R02 | - |
 | `sample_weight` as training weight (R06) | 0.7042 | -0.0032 | lower on 4/4 folds, se 0.0007 |
 
@@ -181,7 +196,10 @@ in borrower mix. Expect calibration drift in the out-of-time test.
     0.0120 raw, 0.0086 calibrated.
   - Top validation decile: 9.0% predicted vs 7.9% observed after calibration (5.6% raw). Platt
     scaling over-stretches the top of the scale.
-  - On the gap year, the first out-of-sample check: ECE 0.0088, mean PD 3.20% vs 2.57% observed.
+  - On the gap year, the first out-of-sample check: ECE 0.0088, mean PD 3.20% vs 2.57%
+    observed, top decile 9.0% vs 6.2%.
+  - No held-out comparison of raw vs calibrated scores was made before freezing. In hindsight,
+    the calibrator shape is a weakness.
 - Frozen on: 2026-11-18, before the test window was scored.
 
 ## Test result
@@ -195,9 +213,17 @@ in borrower mix. Expect calibration drift in the out-of-time test.
   KS 0.309, PR AUC 0.037, Brier 0.0226, ECE 0.0119.
 - Interval: stratified bootstrap (1,000 resamples), 95% CI 0.651-0.708.
 - Compared with the validation score: validation AUC 0.7195 (CI 0.687-0.751), gap year 0.7124
-  (CI 0.689-0.737), test 0.680. The test is lower than validation by 0.040 and the intervals
-  overlap. Mean PD on test is 3.21% against 2.27% observed (about 41% over), because default
-  rates fell in 2023-24 at constant borrower mix.
+  (CI 0.689-0.737), test 0.680. Validation lacks a label-horizon gap and is probably optimistic.
+  The test interval (0.651-0.708) is the expected range for next-year ranking.
+- Level and shape:
+  - Mean PD on test is 3.21% against 2.27% observed (ratio 1.41).
+  - The top decile predicts 9.1% vs 3.9% observed.
+  - Both the 2023-24 fall in default rates and the Platt calibrator's top-end stretch
+    contribute.
+- Cutoff on test: the break-even cutoff declines 97 loans (1.0%), of which 4 default (4.1%,
+  far below break-even). In the gap year it declines 119 loans, 11 default (9.2%). With this
+  calibration, the cutoff declines profitable loans and should not be used before
+  recalibration.
 
 ## Stability
 
@@ -206,10 +232,13 @@ in borrower mix. Expect calibration drift in the out-of-time test.
     3.3% while mean PD stays at 3.0-3.3%.
 - Drift of features and score (PSI):
   - Score against the training window: validation 0.0014, gap 0.0006, test 0.0007.
-  - Every numeric input, train vs test: below 0.002 (largest is `employment_length`, 0.0019).
-  - The 2024 change is in outcomes, and population measures cannot see it.
+  - Numeric inputs, train vs test: all below 0.002 (largest is `employment_length`, 0.0019).
+  - Categorical inputs: channel 0.0001, product 0.0002, state 0.0011.
+  - These cover booked loans and marginal distributions only. Within that scope the
+    population did not move, and the 2024 change shows up in outcomes only.
 - Segments below the size threshold (not scored on test): channel Mail; product Business;
-  states CA, FL, GA, IL, NY; FICO bands 650-699 and 700-749.
+  states CA, FL, GA, IL, NY; FICO bands 650-699 and 700-749; FICO missing (460 loans, 12
+  defaults).
 - Weak segments (test AUC below 0.680 by more than the segment's bootstrap SE):
   - FICO < 650: AUC 0.540 (3,196 loans, 121 defaults).
   - Channel Direct: AUC 0.645 (4,968 loans, 114 defaults), vs Partner 0.727.
@@ -235,7 +264,7 @@ in borrower mix. Expect calibration drift in the out-of-time test.
 
 | Attribute | May be an input | Reason | Checked outcome |
 |---|---|---|---|
-| age | no | ECOA/Reg B protected basis | Test approval rate at cutoff 98.8-99.5% across five age bands; mean PD 3.1-3.3%; observed 2.0-2.6% |
+| age | no | ECOA/Reg B protected basis | No evidence of rank disparity: Spearman(age, PD) 0.003 on test; approval by band 79.1-81.4% at the 80% policy, 88.1-91.3% at the 90% policy. Predicted/observed by band 1.25-1.60 (37-67 defaults per band, noisy) |
 | state | yes | Weak risk signal (CA 2.46% to GA 3.23%) | Needs fair-lending review as a geographic proxy; state segments too small to score on test except Other and TX |
 | employment_length | yes | Self-reported; inconsistent with age in 27.7% of rows | Not capped by age, to keep age out of the model |
 
@@ -248,19 +277,22 @@ in borrower mix. Expect calibration drift in the out-of-time test.
     2.5.5) and the model file's SHA-256, which is checked on load.
 - Pipeline: one object from raw application columns to calibrated PD. It runs placeholder
   cleaning, ratios, categories, monotone LightGBM and Platt calibration.
-- Input schema: the 13 application columns in `metadata.json` (`input_columns`).
-  `score_applications` raises `SchemaError` on a missing column, and an unseen category is
-  logged and treated as missing.
+- Input schema: the 12 raw application columns of the `no_apr` feature set, stored in
+  `metadata.json` (`input_columns`). APR is not required.
+  - `score_applications` raises `SchemaError` on a missing column.
+  - An unseen category is logged and treated as missing.
+- Latency: median 2.1 ms, p99 2.5 ms per single application (200 calls on a laptop CPU).
 - Environment: `uv.lock`, seed 0 everywhere, data SHA-256 in the metadata.
   `tests/test_artifact.py` reloads the artifact and reproduces the stored test predictions
   (`reports/test_predictions.csv`).
-- Refit for deployment: none yet. Recommended: refit on all mature vintages (through 2023) as
-  v2, with its own calibration check on the most recent mature vintages.
+- Refit for deployment: none yet. Recommended v2: R09's configuration refit on all mature
+  vintages (through 2023), with recalibration and a fresh out-of-time check on the most recent
+  mature vintages.
 
 ## Deployment and monitoring
 
-- Mode and latency budget: online scoring at application time. One pipeline call scores an
-  application in milliseconds, inside a 100 ms budget. Nightly batch rescoring of the pipeline
+- Mode and latency budget: online scoring at application time. Measured at a median of 2.1 ms
+  per application, inside a 100 ms budget. Nightly batch rescoring of the pipeline
   population feeds monitoring.
 - Rollout: shadow mode for one to two quarters (score, log, no decisions), then a
   champion-challenger split (for example 90/10) against the current policy, compared on early
@@ -283,14 +315,16 @@ in borrower mix. Expect calibration drift in the out-of-time test.
   - matured-vintage AUC below 0.65 (retrain);
   - feature or score PSI above 0.25 (investigate, then retrain).
 
-  At the time of the test, the ratio is 0.71 (2.27% / 3.21%), so recalibration is already due.
+  At the time of the test, the observed/predicted ratio is 0.71 (2.27% / 3.21%), so
+  recalibration is already due.
 
 ## Limitations and open questions
 
 - Known weak segments or periods:
   - FICO < 650 (test AUC 0.54).
   - Direct channel (0.645).
-  - 2024 vintages, where the PD level is about 41% too high.
+  - 2024 vintages, where the mean PD is 41% above the observed rate and the top decile more
+    than twice.
 - Open questions, each with the default used here:
   1. Snapshot date and label maturity for 202310-202409. Default: labels treated as final.
   2. Whether `loan_amount`, `term` and `apr` are requested or approved and priced values.
@@ -301,8 +335,11 @@ in borrower mix. Expect calibration drift in the out-of-time test.
 - Other limitations:
   - Platt calibration over-stretches the top decile. It was kept because it was frozen before
     the test.
+  - The frozen model is under-tuned relative to the converged search (R05 0.7013 vs R09 0.7087
+    CV AUC), because the original LightGBM stopping rule was too coarse.
+  - The test window is not pristine: 2023-24 outcome rates were examined in EDA, and an
+    isotonic pipeline variant was scored on it after the freeze. Neither changed a decision.
   - CV and validation have no label-horizon gap, so they may be slightly optimistic. Only the
     test AUC is quoted as expected performance.
   - The data looks synthetic (independent uniform features, generated post-origination
     columns).
-- Reviewer findings: see the notes at the end of this card.
