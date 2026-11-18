@@ -281,7 +281,8 @@ Expect calibration drift in the out-of-time test.
   `metadata.json` (`input_columns`). APR is not required.
   - `score_applications` raises `SchemaError` on a missing column.
   - An unseen category is logged and treated as missing.
-- Latency: median 2.1 ms, p99 2.5 ms per single application (200 calls on a laptop CPU).
+- Latency: median 2.1 ms, p99 under 3 ms per single application (200 calls on a laptop CPU; the
+  p99 varies by run).
 - Environment: `uv.lock`, seed 0 everywhere, data SHA-256 in the metadata.
   `tests/test_artifact.py` reloads the artifact and reproduces the stored test predictions
   (`reports/test_predictions.csv`).
