@@ -1,17 +1,22 @@
 # Credit risk: 12-month probability of default at origination
 
-A probability-of-default (PD) model scored at the application decision, built on 50,000 loans
-from vintages 2021-01 to 2024-09. It uses an out-of-time evaluation, has a documented selection
-rule, and ships as a Metaflow pipeline that reproduces the analysis and versions the model.
+## Summary
 
-- [`notebooks/modeling.ipynb`](notebooks/modeling.ipynb) is the main deliverable, executed
-  with all outputs saved. It ends with the summary, limitations and recommendations.
-- [`docs/model-card.md`](docs/model-card.md) records every data, split, selection,
-  calibration and monitoring decision, with its numbers.
-- [`reports/leaderboard.csv`](reports/leaderboard.csv) lists every model run. Each run has a
-  manifest under [`runs/`](runs/): the script writes it before the run starts and appends the
-  result. The post-test recalibration (R10) changes no model, so it has a manifest but no
-  leaderboard row.
+- **The model ranks applicants out of time.** On 2024 loans the test AUC is 0.680 (95% CI
+  0.651-0.708), and the lowest-scored 20% default at 0.20% against 2.27% overall.
+- **Its PD is not fit for pricing yet.** The frozen v1 loses to a constant on test Brier (skill
+  -1.5%), because its calibrator was fit on the probability instead of the log-odds. A
+  post-hoc recalibration (v1.1) reaches +0.7%, no better than the uncalibrated scores.
+- **At the assumed economics it declines nobody.** With LGD 60% and margin 10% the break-even
+  PD is 14.3%, and the highest v1.1 PD on test is 11.3%. Use the score for ranking: pricing
+  tiers, limits and an approval-rate policy, not a break-even decline rule.
+- **The scale is compressed at the bottom.** The lowest test decile predicts 1.87% against
+  0.10% observed. [Next version](#next-version) says how to fix it.
+
+The [notebook](notebooks/modeling.ipynb) is the main deliverable (executed, outputs saved).
+The [model card](docs/model-card.md) records every decision with its numbers, and
+[`reports/leaderboard.csv`](reports/leaderboard.csv) and [`runs/`](runs/) hold the run
+history: one manifest per run, written before it ran.
 
 ## Results
 
@@ -22,49 +27,43 @@ rule, and ships as a Metaflow pipeline that reproduces the analysis and versions
 | Test ROC AUC | 0.680 (95% CI 0.651-0.708). Gini 0.36, KS 0.31 |
 | Validation AUC, selected model vs FICO only | 0.719 vs 0.648 |
 | 2023 gap-year AUC | 0.712 |
-| Lowest-scored 20% of test loans | 0.20% default rate, against 2.27% overall |
 | Test Brier skill vs a constant at the training default rate | -1.5% (95% CI -2.5% to -0.5%) for the frozen v1. +0.7% (+0.4% to +1.0%) for v1.1, recalibrated after the test pass |
-| Calibration on test (v1) | Mean PD 3.21% vs 2.27% observed. Top decile 9.1% vs 3.9% |
+| Test mean PD vs observed | 3.21% (v1) and 3.20% (v1.1) vs 2.27% |
+| Test deciles, predicted vs observed (v1.1) | Top 5.7% vs 3.9%. Bottom four over-predict 2x to 19x |
 
-**The model ranks, but its PD does not yet price.** The frozen v1 PD scores worse on test Brier
-than predicting the training default rate for every loan. There are two causes:
+How the result was reached:
 
-- **The calibrator (our error).** Platt scaling was fit on the raw probability instead of its
-  log-odds, which stretched the top of the scale. The uncalibrated scores beat v1.
-- **2024 level shift (drift).** Default rates fell while the measured input distributions did
-  not move.
+1. **Leakage removed.** `days_past_due_current`, `sample_weight`, payments-to-date over loan
+   amount and `months_on_book` are not available at the decision; with them, CV AUC is 1.000.
+2. **Placeholder codes become missing values plus flags** (FICO 99999, income -1, inquiries
+   99). Missingness itself predicts default.
+3. **Out-of-time evaluation with the production gap.** Tune on 2021-01 to 2022-06 (expanding
+   quarterly folds), calibrate on 2022-H2, hold out 2023 as the 12-month label gap, test on
+   2024.
+4. **Selection by a rule written before any model ran.** It takes the simplest model within one
+   CV standard error of the best. It chose LightGBM without APR, and later searches confirm APR
+   adds nothing.
+5. **Recalibration after the test pass (v1.1, run R10).** It was registered before it ran and
+   chosen on 2022 data only. The rule picked a one-parameter log-odds shift, which removes v1's
+   top-end stretch but cannot change shape. With 214 validation defaults every candidate except
+   v1's method was within one standard error, so the rule had no power to prefer a richer one.
+   Diagnostics fit on test labels reach 1.0% skill with a level shift and 1.4% with isotonic:
+   about half of what remains is the 2024 drop in default rates (cause not established) and
+   half is shape.
 
-A recalibrated v1.1 was registered after the test pass and chosen on 2022 data only. Its test
-figures are a second look at the test window. It removes the top-end stretch. It does not fix
-the bottom of the scale (1.87% predicted vs 0.10% observed), which the registered run expected
-it to: the one-parameter log-odds shift that the selection rule picked cannot change shape.
-Calibrators fit on the test labels themselves, as diagnostics, reach 1.0% skill with a level
-shift alone and 1.4% with isotonic. So roughly half of what remains is level and half is shape.
+## Next version
 
-What drove the result:
+The tuned models are barely fitted (R09, the best search, is 88 three-leaf trees at learning
+rate 0.0135). Tuning on AUC cannot see a compressed scale, so it keeps choosing such models.
 
-1. **Four columns are not available at the decision.**
-   - `days_past_due_current` and `sample_weight` separate defaults perfectly.
-   - `total_payments_to_date` divided by the loan amount does too.
-   - `months_on_book` is recorded after origination.
-   - With them, CV AUC is 1.000. All four are excluded, and `sample_weight` is tested only as a
-     training weight. That made AUC slightly worse.
-2. **Placeholder codes are missing values, and missingness predicts default.** These are
-   FICO 99999, income -1 and inquiries 99. Each becomes NaN plus a missing flag.
-3. **Out-of-time validation with the production gap.** Tuning runs on 2021-01 to 2022-06 with
-   expanding quarterly folds. Calibration and the cutoff use 2022-H2. 2023 is held out as the
-   12-month label gap, and 2024 is the test window, scored once with the frozen model.
-4. **Selection follows a rule written before any model ran.** It picks the simplest model
-   within one CV standard error of the best. It chose LightGBM without APR. Finer searches run
-   after the test pass confirm that APR adds nothing (0.7087 without, 0.7079 with). They also
-   show the frozen configuration is about one standard error behind (R09, the recommended
-   next version). Reference runs bracket it. LightGBM with library defaults reaches 0.672 CV
-   AUC. A supervised-bin scorecard reaches 0.680 CV and 0.708 validation, a credible
-   alternative where a scorecard is required.
-
-Default rates fell from 3.2% (2021-22) to 2.3% (2024) while input distributions stayed stable,
-mostly below FICO 650. The cause is not established. Limitations and recommendations close the
-notebook.
+1. Tune on log loss instead of AUC, with the same out-of-time folds.
+2. Fit and choose the calibrator on out-of-fold training scores plus validation: 658 defaults
+   instead of 214. First check on validation that fold-model scores have the same scale as the
+   final model's.
+3. At deployment, rerun that selection with 2023 outcomes added. No window is left to test it
+   here, so it carries no test claim.
+4. Do not score the 2024 window again. It has had three looks; a new version needs a new
+   out-of-time window.
 
 ## Repository layout
 

@@ -227,7 +227,9 @@ Expect calibration drift in the out-of-time test.
 - Candidates, simplest first: log-odds shift, log-odds Platt (intercept and slope), v1's sigmoid
   on the probability, isotonic.
 - Selection: fit on 202207-202209, score 202210-202212, and the reverse; pooled out-of-fold
-  Brier; simplest method within one paired standard error of the lowest.
+  Brier; simplest method within one paired standard error of the lowest. With 214 defaults the
+  two log-odds methods and isotonic are all within one standard error (only v1's method is
+  ruled out), so the rule had no power to prefer a richer shape and fell back to the simplest.
 
 | Method | Out-of-fold Brier | Difference vs best | Paired SE | Eligible |
 |---|---|---|---|---|
@@ -353,9 +355,13 @@ Expect calibration drift in the out-of-time test.
 - Post-hoc artifact `models/pd-lgbm-no-apr-v1.1/`: the same base pipeline with the v1.1
   calibrator, same input schema. `reports/test_predictions_v1.1.csv` holds v1 and v1.1 PDs,
   and the notebook checks that the artifact reproduces them.
-- Refit for deployment: none yet. Recommended v2: R09's configuration refit on all mature
-  vintages (through 2023), with recalibration and a fresh out-of-time check on the most recent
-  mature vintages.
+- Refit for deployment: none yet. Recommended v2 (README, Next version):
+  - Tune on log loss, not AUC. The best AUC search (R09: 88 three-leaf trees at learning rate
+    0.0135) is as lightly fitted as v1, and AUC cannot see a compressed scale.
+  - Fit and choose the calibrator on out-of-fold training scores plus validation (658 defaults
+    instead of 214), after checking that fold-model scores share the final model's scale.
+  - Refit on all mature vintages and evaluate on a new out-of-time window. The 2024 window has
+    had three looks and should not be scored again.
 
 ## Deployment and monitoring
 
