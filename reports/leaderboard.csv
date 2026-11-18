@@ -1,0 +1,9 @@
+data_version,split_id,cv_scheme,metric,direction,run_id,family,feature_set,weighted,selectable,cv_mean,cv_se,val_score,trials,stop_reason,selected,test_score,manifest
+enhanced-v1,oot-v1,expanding-quarter-4,roc_auc,max,R00-base-rate,base_rate,full,no,yes,0.5,0.0,0.5,1,none,no,,../runs/R00-base-rate/manifest.md
+enhanced-v1,oot-v1,expanding-quarter-4,roc_auc,max,R01-fico-only,logreg,fico_only,no,yes,0.62915,0.01044,0.64791,1,none,no,,../runs/R01-fico-only/manifest.md
+enhanced-v1,oot-v1,expanding-quarter-4,roc_auc,max,R02-logreg,logreg,full,no,yes,0.68121,0.01337,0.71259,35,plateau,no,,../runs/R02-logreg/manifest.md
+enhanced-v1,oot-v1,expanding-quarter-4,roc_auc,max,R03-lgbm,lgbm,full,no,yes,0.70737,0.00697,0.71844,33,plateau,no,,../runs/R03-lgbm/manifest.md
+enhanced-v1,oot-v1,expanding-quarter-4,roc_auc,max,R04-logreg-no-apr,logreg,no_apr,no,yes,0.68338,0.01064,0.7134,1,none,no,,../runs/R04-logreg-no-apr/manifest.md
+enhanced-v1,oot-v1,expanding-quarter-4,roc_auc,max,R05-lgbm-no-apr,lgbm,no_apr,no,yes,0.70131,0.00615,0.71947,1,none,yes,0.68003,../runs/R05-lgbm-no-apr/manifest.md
+enhanced-v1,oot-v1,expanding-quarter-4,roc_auc,max,R06-lgbm-weighted,lgbm,full,yes,yes,0.70417,0.00635,0.71737,1,none,no,,../runs/R06-lgbm-weighted/manifest.md
+enhanced-v1,oot-v1,expanding-quarter-4,roc_auc,max,R07-lgbm-leaky,lgbm,leaky,no,no,1.0,0.0,1.0,1,none,no,,../runs/R07-lgbm-leaky/manifest.md

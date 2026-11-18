@@ -1,0 +1,291 @@
+alembic==1.20.1
+    # via optuna
+appnope==1.0.0 ; sys_platform == 'darwin'
+    # via ipykernel
+asttokens==3.0.2
+    # via stack-data
+attrs==26.1.0
+    # via
+    #   jsonschema
+    #   referencing
+beautifulsoup4==4.15.0
+    # via nbconvert
+bleach==6.4.0
+    # via nbconvert
+boto3==1.44.5
+    # via metaflow
+botocore==1.44.5
+    # via
+    #   boto3
+    #   s3transfer
+certifi==2026.10.23
+    # via requests
+cffi==2.1.1 ; implementation_name == 'pypy'
+    # via pyzmq
+charset-normalizer==3.5.2
+    # via requests
+cloudpickle==3.1.3
+    # via
+    #   joblib
+    #   shap
+colorama==0.4.6 ; sys_platform == 'win32'
+    # via
+    #   colorlog
+    #   ipython
+    #   pytest
+    #   tqdm
+colorlog==6.12.0
+    # via optuna
+comm==0.2.3
+    # via ipykernel
+contourpy==1.4.0
+    # via matplotlib
+cycler==0.12.1
+    # via matplotlib
+debugpy==1.8.22
+    # via ipykernel
+defusedxml==0.7.1
+    # via nbconvert
+executing==2.3.0
+    # via stack-data
+fastjsonschema==2.22.3
+    # via nbformat
+fonttools==4.68.0
+    # via matplotlib
+idna==3.20
+    # via requests
+iniconfig==2.3.1
+    # via pytest
+ipykernel==7.4.0
+ipython==9.18.1
+    # via ipykernel
+ipython-pygments-lexers==1.1.1
+    # via ipython
+jedi==0.20.1
+    # via ipython
+jinja2==3.1.6
+    # via nbconvert
+jmespath==1.1.0
+    # via
+    #   boto3
+    #   botocore
+joblib==1.6.0
+    # via
+    #   credit-risk
+    #   scikit-learn
+jsonschema==4.26.0
+    # via nbformat
+jsonschema-specifications==2025.9.1
+    # via jsonschema
+jupyter-client==8.10.0
+    # via
+    #   ipykernel
+    #   nbclient
+jupyter-core==5.9.1
+    # via
+    #   ipykernel
+    #   jupyter-client
+    #   nbclient
+    #   nbconvert
+    #   nbformat
+jupyterlab-pygments==0.3.0
+    # via nbconvert
+jupytext==1.19.6
+kiwisolver==1.5.1
+    # via matplotlib
+lightgbm==4.7.0
+    # via credit-risk
+mako==1.4.3
+    # via alembic
+markdown-it-py==4.3.0
+    # via
+    #   jupytext
+    #   mdit-py-plugins
+markupsafe==3.0.4
+    # via
+    #   jinja2
+    #   mako
+    #   nbconvert
+matplotlib==3.11.2
+    # via
+    #   credit-risk
+    #   seaborn
+matplotlib-inline==0.2.2
+    # via
+    #   ipykernel
+    #   ipython
+mdit-py-plugins==0.7.0
+    # via jupytext
+mdurl==0.1.2
+    # via markdown-it-py
+metaflow==2.19.41
+    # via credit-risk
+mistune==3.4.0
+    # via nbconvert
+narwhals==2.29.0
+    # via
+    #   lightgbm
+    #   scikit-learn
+nbclient==0.11.0
+    # via nbconvert
+nbconvert==7.17.2
+nbformat==5.11.1
+    # via
+    #   jupytext
+    #   nbclient
+    #   nbconvert
+nest-asyncio2==1.7.4
+    # via ipykernel
+numpy==2.5.5
+    # via
+    #   contourpy
+    #   credit-risk
+    #   lightgbm
+    #   matplotlib
+    #   optuna
+    #   pandas
+    #   scikit-learn
+    #   scipy
+    #   seaborn
+    #   shap
+optuna==5.1.0
+    # via credit-risk
+packaging==26.3
+    # via
+    #   ipykernel
+    #   jupytext
+    #   matplotlib
+    #   nbconvert
+    #   optuna
+    #   pytest
+    #   shap
+pandas==3.1.1
+    # via
+    #   credit-risk
+    #   seaborn
+    #   shap
+pandocfilters==1.5.1
+    # via nbconvert
+parso==0.8.7
+    # via jedi
+pexpect==4.9.0 ; sys_platform != 'emscripten' and sys_platform != 'win32'
+    # via ipython
+pillow==13.0.0
+    # via matplotlib
+platformdirs==4.14.7
+    # via jupyter-core
+pluggy==1.7.0
+    # via pytest
+prompt-toolkit==3.0.53
+    # via ipython
+psutil==7.2.2 ; sys_platform != 'android' and sys_platform != 'cygwin' and sys_platform != 'emscripten'
+    # via ipython
+ptyprocess==0.7.0 ; sys_platform != 'emscripten' and sys_platform != 'win32'
+    # via pexpect
+pure-eval==0.2.4
+    # via stack-data
+pycparser==3.12 ; implementation_name == 'pypy'
+    # via cffi
+pygments==2.21.0
+    # via
+    #   ipython
+    #   ipython-pygments-lexers
+    #   nbconvert
+    #   pytest
+pyparsing==3.3.3
+    # via matplotlib
+pytest==9.2.0
+python-dateutil==2.9.0.post0
+    # via
+    #   botocore
+    #   jupyter-client
+    #   matplotlib
+    #   pandas
+pyyaml==6.0.3
+    # via
+    #   jupytext
+    #   optuna
+pyzmq==27.3.0
+    # via
+    #   ipykernel
+    #   jupyter-client
+referencing==0.37.0
+    # via
+    #   jsonschema
+    #   jsonschema-specifications
+requests==2.34.2
+    # via metaflow
+rpds-py==2026.9.1
+    # via
+    #   jsonschema
+    #   referencing
+ruff==0.17.5
+s3transfer==0.19.3
+    # via boto3
+scikit-learn==1.9.1
+    # via
+    #   credit-risk
+    #   shap
+scipy==1.18.1
+    # via
+    #   credit-risk
+    #   lightgbm
+    #   scikit-learn
+    #   shap
+seaborn==0.13.2
+    # via credit-risk
+shap==0.54.1
+    # via credit-risk
+six==1.17.0
+    # via python-dateutil
+slicer==0.0.8
+    # via shap
+soupsieve==4.1.1
+    # via beautifulsoup4
+sqlalchemy==2.1.9
+    # via
+    #   alembic
+    #   optuna
+stack-data==0.6.3
+    # via ipython
+threadpoolctl==3.8.0
+    # via scikit-learn
+tinycss2==1.5.1
+    # via bleach
+tornado==6.6.1
+    # via
+    #   ipykernel
+    #   jupyter-client
+tqdm==4.70.1
+    # via
+    #   optuna
+    #   shap
+traitlets==5.16.1
+    # via
+    #   ipykernel
+    #   ipython
+    #   jupyter-client
+    #   jupyter-core
+    #   matplotlib-inline
+    #   nbclient
+    #   nbconvert
+    #   nbformat
+typing-extensions==4.16.0
+    # via
+    #   alembic
+    #   beautifulsoup4
+    #   jupyter-client
+    #   referencing
+    #   sqlalchemy
+tzdata==2026.6 ; sys_platform == 'emscripten' or sys_platform == 'win32'
+    # via pandas
+urllib3==2.8.0
+    # via
+    #   botocore
+    #   requests
+wcwidth==0.9.4
+    # via prompt-toolkit
+webencodings==0.6.1
+    # via
+    #   bleach
+    #   tinycss2

@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from credit_risk.config import SplitProtocol
 from credit_risk.splits import assign_split, expanding_quarter_folds
 
 
@@ -46,3 +47,24 @@ def test_expanding_folds_errors():
         expanding_quarter_folds(v, y, n_folds=4, min_positives=50)
     with pytest.raises(ValueError, match="quarters"):
         expanding_quarter_folds(v, y, n_folds=6, min_positives=1)
+
+
+def test_protocol_december_rollover():
+    p = SplitProtocol(train_end=202212, val_start=202301, val_end=202306)
+    assert p.val_start == 202301
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"val_start": 202208},  # gap after train_end
+        {"val_start": 202206},  # overlaps train
+        {"train_end": 202213, "val_start": 202214},  # invalid month
+        {"val_end": 202206},  # val_end before val_start
+        {"test_start": 202212},  # test_start not after val_end
+        {"test_end": 202312},  # test_end before test_start
+    ],
+)
+def test_protocol_rejects(kwargs):
+    with pytest.raises(ValueError):
+        SplitProtocol(**kwargs)

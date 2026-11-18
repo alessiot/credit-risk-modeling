@@ -1,0 +1,51 @@
+{
+  "run_id": "R02-logreg",
+  "family": "logreg",
+  "feature_set": "full",
+  "weighted": false,
+  "selectable": true,
+  "params": {
+    "C": 6.34632684458423,
+    "n_bins": 3
+  },
+  "fold_scores": [
+    0.7009473513538553,
+    0.6420470228434523,
+    0.6867564412874535,
+    0.6950758381552076
+  ],
+  "cv_mean": 0.6812066634099921,
+  "cv_se": 0.013373874570719526,
+  "val_metrics": {
+    "n": 6693.0,
+    "n_pos": 214.0,
+    "base_rate": 0.031973703869714626,
+    "mean_score": 0.03208279540148236,
+    "roc_auc": 0.7125876123146961,
+    "gini": 0.4251752246293923,
+    "ks": 0.3327529776286579,
+    "pr_auc": 0.07163394311357192,
+    "brier": 0.03040354699484984,
+    "log_loss": 0.13288585264400304
+  },
+  "trials": 35,
+  "stop_reason": "plateau",
+  "convergence": {
+    "min_delta": 0.01751250636257243,
+    "reruns": [
+      {
+        "seed": 1,
+        "best": 0.6812161974828426,
+        "trials": 61,
+        "stop_reason": "plateau"
+      },
+      {
+        "seed": 2,
+        "best": 0.6812097253605078,
+        "trials": 61,
+        "stop_reason": "plateau"
+      }
+    ],
+    "status": "converged"
+  }
+}

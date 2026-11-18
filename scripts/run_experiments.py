@@ -428,6 +428,83 @@ def run_one(
     return result
 
 
+def convergence_check(
+    spec: RunSpec,
+    train: pd.DataFrame,
+    folds: list[tuple[np.ndarray, np.ndarray]],
+    result: dict[str, Any],
+    seeds: tuple[int, ...] = (1, 2),
+) -> dict[str, Any]:
+    """Rerun a tuned search with other seeds, double window and double cap.
+
+    The search counts as converged when no rerun beats the recorded best CV AUC by more than
+    the minimum delta (the cv_se of the default configuration).
+
+    Args:
+        spec: Specification of a tuned run (cap > 0).
+        train: Training window.
+        folds: Expanding-window folds over `train`.
+        result: Recorded result of the run.
+        seeds: Sampler seeds of the reruns.
+
+    Returns:
+        Dictionary with the minimum delta, per-seed best values, trials, stop reasons and the
+        status ("converged" or "unconverged"). Also appended to the run manifest.
+    """
+    run_dir = RUNS_DIR / spec.run_id
+    y = train[TARGET]
+
+    def cv(params: dict[str, Any]) -> CVResult:
+        return cross_validate(spec.family, spec.feature_set, params, train, y, folds, seed=SEED)
+
+    min_delta = cv(DEFAULT_PARAMS[spec.family]).cv_se
+    space = SPACES[spec.family]
+    reruns = []
+    for seed in seeds:
+        log_path = run_dir / f"trials_seed{seed}.csv"
+        log_path.unlink(missing_ok=True)
+        rerun = tune(
+            lambda trial: cv(space(trial)).cv_mean,
+            "maximize",
+            min_delta=min_delta,
+            window=2 * WINDOW,
+            cap=2 * spec.cap,
+            seed=seed,
+            log_path=log_path,
+        )
+        reruns.append(
+            {
+                "seed": seed,
+                "best": rerun.best_value,
+                "trials": rerun.n_trials,
+                "stop_reason": rerun.stop_reason,
+            }
+        )
+        logger.info(
+            "%s convergence seed %d: best %.4f after %d trials (%s)",
+            spec.run_id,
+            seed,
+            rerun.best_value,
+            rerun.n_trials,
+            rerun.stop_reason,
+        )
+    beaten = [r for r in reruns if r["best"] > result["cv_mean"] + min_delta]
+    status = "unconverged" if beaten else "converged"
+    lines = "".join(
+        f"  - seed {r['seed']}: best {r['best']:.4f} after {r['trials']} trials "
+        f"({r['stop_reason']}), log trials_seed{r['seed']}.csv\n"
+        for r in reruns
+    )
+    with (run_dir / "manifest.md").open("a", encoding="utf-8") as fh:
+        fh.write(
+            f"\n## Convergence check\n\n- Best-so-far curve: trials.csv (column best_so_far)\n"
+            f"- Rerun with a larger cap: window {2 * WINDOW}, cap {2 * spec.cap}, "
+            f"minimum delta {min_delta:.5f}\n{lines}"
+            f"- Status: {status} (recorded best {result['cv_mean']:.4f})\n"
+        )
+    return {"min_delta": min_delta, "reruns": reruns, "status": status}
+
+
 def write_leaderboard(results: list[dict[str, Any]]) -> None:
     """Write reports/leaderboard.csv with one row per run (none selected yet).
 
@@ -470,6 +547,11 @@ def main() -> None:
     parser.add_argument("--runs", nargs="*", help="run_id prefixes to run (default: all)")
     parser.add_argument("--smoke", action="store_true", help="3 trials per search, no outputs")
     parser.add_argument("--verbose", action="store_true", help="DEBUG logging")
+    parser.add_argument(
+        "--convergence",
+        action="store_true",
+        help="rerun the tuned searches with two more seeds, double window and cap",
+    )
     args = parser.parse_args()
     level = "DEBUG" if args.verbose else os.environ.get("LOG_LEVEL", "INFO")
     logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -486,6 +568,15 @@ def main() -> None:
     for path in RUNS_DIR.glob("*/result.json"):
         prior = json.loads(path.read_text(encoding="utf-8"))
         done[prior["run_id"]] = prior
+    if args.convergence:
+        for spec in selected:
+            if spec.cap:
+                check = convergence_check(spec, train, folds, done[spec.run_id])
+                done[spec.run_id]["convergence"] = check
+                write_text(
+                    RUNS_DIR / spec.run_id / "result.json", json.dumps(done[spec.run_id], indent=2)
+                )
+        return
     for spec in selected:
         if spec.params_from and spec.params_from not in done:
             sys.exit(f"{spec.run_id} needs {spec.params_from} to have run first")

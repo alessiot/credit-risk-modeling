@@ -1,0 +1,70 @@
+[
+  {
+    "name": "logreg_full",
+    "family": "logreg",
+    "feature_set": "full",
+    "params": {
+      "C": 6.34632684458423,
+      "n_bins": 3
+    },
+    "weighted": false
+  },
+  {
+    "name": "lgbm_full",
+    "family": "lgbm",
+    "feature_set": "full",
+    "params": {
+      "n_estimators": 64,
+      "learning_rate": 0.01111149590259364,
+      "num_leaves": 18,
+      "min_child_samples": 138,
+      "reg_lambda": 0.0013435846437317542,
+      "colsample_bytree": 0.7901712827020574,
+      "subsample": 0.7497307409391766,
+      "subsample_freq": 1
+    },
+    "weighted": false
+  },
+  {
+    "name": "logreg_no_apr",
+    "family": "logreg",
+    "feature_set": "no_apr",
+    "params": {
+      "C": 6.34632684458423,
+      "n_bins": 3
+    },
+    "weighted": false
+  },
+  {
+    "name": "lgbm_no_apr",
+    "family": "lgbm",
+    "feature_set": "no_apr",
+    "params": {
+      "n_estimators": 64,
+      "learning_rate": 0.01111149590259364,
+      "num_leaves": 18,
+      "min_child_samples": 138,
+      "reg_lambda": 0.0013435846437317542,
+      "colsample_bytree": 0.7901712827020574,
+      "subsample": 0.7497307409391766,
+      "subsample_freq": 1
+    },
+    "weighted": false
+  },
+  {
+    "name": "lgbm_full_weighted",
+    "family": "lgbm",
+    "feature_set": "full",
+    "params": {
+      "n_estimators": 64,
+      "learning_rate": 0.01111149590259364,
+      "num_leaves": 18,
+      "min_child_samples": 138,
+      "reg_lambda": 0.0013435846437317542,
+      "colsample_bytree": 0.7901712827020574,
+      "subsample": 0.7497307409391766,
+      "subsample_freq": 1
+    },
+    "weighted": true
+  }
+]

@@ -93,5 +93,26 @@ class SplitProtocol:
     test_end: int = 202409
     split_id: str = "oot-v1"
 
+    def __post_init__(self) -> None:
+        """Validate that the boundaries are YYYYMM months in a consistent order.
+
+        Raises:
+            ValueError: If a boundary is not a valid YYYYMM, `val_start` is not the month right
+                after `train_end`, or the order val_start <= val_end < test_start <= test_end
+                is violated.
+        """
+        bounds = (self.train_end, self.val_start, self.val_end, self.test_start, self.test_end)
+        if any(not 1 <= b % 100 <= 12 or b // 100 < 1 for b in bounds):
+            raise ValueError(f"split boundaries must be valid YYYYMM: {bounds}")
+        year, month = divmod(self.train_end, 100)
+        next_month = (year + 1) * 100 + 1 if month == 12 else self.train_end + 1
+        if self.val_start != next_month:
+            raise ValueError(
+                f"val_start {self.val_start} must be the month after train_end {self.train_end}"
+                f" ({next_month})"
+            )
+        if not self.val_start <= self.val_end < self.test_start <= self.test_end:
+            raise ValueError(f"boundaries out of order: {bounds}")
+
 
 DEFAULT_PROTOCOL = SplitProtocol()

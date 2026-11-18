@@ -1,0 +1,92 @@
+{
+  "candidate": {
+    "family": "lgbm",
+    "feature_set": "no_apr",
+    "name": "R05-lgbm-no-apr",
+    "params": {
+      "colsample_bytree": 0.7901712827020574,
+      "learning_rate": 0.01111149590259364,
+      "min_child_samples": 138,
+      "n_estimators": 64,
+      "num_leaves": 18,
+      "reg_lambda": 0.0013435846437317542,
+      "subsample": 0.7497307409391766,
+      "subsample_freq": 1
+    },
+    "weighted": false
+  },
+  "created_utc": "2026-11-18T13:36:27.833535+00:00",
+  "data_sha256": "06e6bfa6fe44cede0463b6c2bf7bd2e3df622cf2f8d3f253bd77655d08f046d3",
+  "extra": {
+    "calibration": "sigmoid (Platt) fit on validation 202207-202212",
+    "lgd": 0.6,
+    "margin": 0.1
+  },
+  "input_columns": [
+    "fico_score",
+    "income",
+    "debt_to_income",
+    "num_open_trades",
+    "utilization_rate",
+    "inquiries_last_6m",
+    "loan_amount",
+    "term",
+    "apr",
+    "employment_length",
+    "channel",
+    "product_type",
+    "state"
+  ],
+  "library_versions": {
+    "joblib": "1.6.0",
+    "lightgbm": "4.7.0",
+    "numpy": "2.5.5",
+    "pandas": "3.1.1",
+    "python": "3.12.13",
+    "scikit-learn": "1.9.1"
+  },
+  "metrics": {
+    "cv_mean": 0.7013113642571307,
+    "cv_se": 0.006149988591641332,
+    "gap": {
+      "base_rate": 0.025714501168840963,
+      "brier": 0.02493750174640107,
+      "gini": 0.42484043470760735,
+      "ks": 0.3213297712973135,
+      "log_loss": 0.11436363498593531,
+      "mean_score": 0.032004339276844054,
+      "n": 13261.0,
+      "n_pos": 341.0,
+      "pr_auc": 0.057015800835876825,
+      "roc_auc": 0.7124202173538037
+    },
+    "test": {
+      "base_rate": 0.022736378205128204,
+      "brier": 0.022640165136181112,
+      "gini": 0.36005912845132304,
+      "ks": 0.3088418616432165,
+      "log_loss": 0.10766558207362514,
+      "mean_score": 0.032064066356481166,
+      "n": 9984.0,
+      "n_pos": 227.0,
+      "pr_auc": 0.037362862643465805,
+      "roc_auc": 0.6800295642256615
+    },
+    "test_auc_ci": [
+      0.6506584451510922,
+      0.7078006008563151
+    ],
+    "val_auc": 0.7194714627992956
+  },
+  "model_name": "R05-lgbm-no-apr",
+  "model_sha256": "0cee2abba4ce49a325691cc4b07d365c3647068e63f74d7dbfb8afdd9b053dc1",
+  "split_protocol": {
+    "split_id": "oot-v1",
+    "test_end": 202409,
+    "test_start": 202401,
+    "train_end": 202206,
+    "val_end": 202212,
+    "val_start": 202207
+  },
+  "threshold": 0.14285714285714288
+}
